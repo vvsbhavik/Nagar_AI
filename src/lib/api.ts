@@ -18,9 +18,12 @@ import type {
   Ward,
   WardHealthScore,
 } from '../shared/types.ts';
+import { clientFallbackEngine } from './clientFallbackEngine.ts';
 
 // Keep auth token strictly in JS memory (never localStorage)
 let authToken: string | null = null;
+// Automatically switches to client-side civic store when deployed to static hosts like Vercel
+let useClientFallback = false;
 
 export function setAuthToken(token: string | null) {
   authToken = token;
@@ -30,7 +33,15 @@ export function getAuthToken(): string | null {
   return authToken;
 }
 
-async function apiFetch<T>(url: string, options: RequestInit = {}): Promise<T> {
+async function apiFetchWithFallback<T>(
+  url: string,
+  options: RequestInit,
+  fallbackFn: () => T
+): Promise<T> {
+  if (useClientFallback) {
+    return fallbackFn();
+  }
+
   const headers: Record<string, string> = {
     ...(options.headers as Record<string, string> | undefined),
   };
@@ -41,12 +52,40 @@ async function apiFetch<T>(url: string, options: RequestInit = {}): Promise<T> {
     headers['Authorization'] = `Bearer ${authToken}`;
   }
 
-  const res = await fetch(url, { ...options, headers });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    throw new Error(data.error || `Request failed (${res.status})`);
+  try {
+    const res = await fetch(url, { ...options, headers });
+    const contentType = res.headers.get('content-type') || '';
+
+    // Static hosting (e.g., Vercel without Node server) returns 404/405 or HTML instead of JSON
+    if (
+      res.status === 404 ||
+      res.status === 405 ||
+      res.status === 502 ||
+      res.status === 503 ||
+      !contentType.includes('application/json')
+    ) {
+      useClientFallback = true;
+      return fallbackFn();
+    }
+
+    const data = await res.json().catch(() => null);
+    if (!data) {
+      useClientFallback = true;
+      return fallbackFn();
+    }
+
+    if (!res.ok) {
+      throw new Error(data.error || `Request failed (${res.status})`);
+    }
+    return data as T;
+  } catch (err) {
+    // Only fall back on network/static-host failures, NOT real API 400/401/403/409 validation errors
+    if (err instanceof TypeError) {
+      useClientFallback = true;
+      return fallbackFn();
+    }
+    throw err;
   }
-  return data as T;
 }
 
 export interface MetaPayload {
@@ -136,38 +175,57 @@ export interface IntelligenceSummaryPayload {
 
 export const api = {
   demoLogin: (role: 'citizen' | 'ward_rep' | 'municipal_admin' | 'field_officer') =>
-    apiFetch<{ token: string; user: UserProfile }>('/api/auth/demo-login', {
-      method: 'POST',
-      body: JSON.stringify({ role }),
-    }),
+    apiFetchWithFallback<{ token: string; user: UserProfile }>(
+      '/api/auth/demo-login',
+      { method: 'POST', body: JSON.stringify({ role }) },
+      () => clientFallbackEngine.demoLogin(role)
+    ),
 
   login: (email: string, password: string) =>
-    apiFetch<{ token: string; user: UserProfile }>('/api/auth/login', {
-      method: 'POST',
-      body: JSON.stringify({ email, password }),
-    }),
+    apiFetchWithFallback<{ token: string; user: UserProfile }>(
+      '/api/auth/login',
+      { method: 'POST', body: JSON.stringify({ email, password }) },
+      () => clientFallbackEngine.login(email, password)
+    ),
 
   register: (payload: { fullName: string; email: string; password: string; wardId?: string }) =>
-    apiFetch<{ token: string; user: UserProfile }>('/api/auth/register', {
-      method: 'POST',
-      body: JSON.stringify(payload),
-    }),
+    apiFetchWithFallback<{ token: string; user: UserProfile }>(
+      '/api/auth/register',
+      { method: 'POST', body: JSON.stringify(payload) },
+      () => clientFallbackEngine.register(payload)
+    ),
 
-  logout: () => apiFetch<{ ok: boolean }>('/api/auth/logout', { method: 'POST' }),
+  logout: () =>
+    apiFetchWithFallback<{ ok: boolean }>('/api/auth/logout', { method: 'POST' }, () =>
+      clientFallbackEngine.logout()
+    ),
 
-  getMe: () => apiFetch<{ user: UserProfile; unreadNotifications: number }>('/api/auth/me'),
+  getMe: () =>
+    apiFetchWithFallback<{ user: UserProfile; unreadNotifications: number }>(
+      '/api/auth/me',
+      {},
+      () => clientFallbackEngine.getMe()
+    ),
 
-  getMeta: () => apiFetch<MetaPayload>('/api/meta'),
+  getMeta: () =>
+    apiFetchWithFallback<MetaPayload>('/api/meta', {}, () => clientFallbackEngine.getMeta()),
 
-  getPublicOverview: () => apiFetch<PublicOverviewPayload>('/api/public/overview'),
+  getPublicOverview: () =>
+    apiFetchWithFallback<PublicOverviewPayload>('/api/public/overview', {}, () =>
+      clientFallbackEngine.getPublicOverview()
+    ),
 
-  getIntelligenceSummary: () => apiFetch<IntelligenceSummaryPayload>('/api/intelligence/summary'),
+  getIntelligenceSummary: () =>
+    apiFetchWithFallback<IntelligenceSummaryPayload>('/api/intelligence/summary', {}, () =>
+      clientFallbackEngine.getIntelligenceSummary()
+    ),
 
   identifyLocation: (payload: { lat: number; lng: number; category?: string; text?: string }) =>
-    apiFetch<GeoIdentifyResult>('/api/geo/identify', {
-      method: 'POST',
-      body: JSON.stringify(payload),
-    }),
+    apiFetchWithFallback<GeoIdentifyResult>(
+      '/api/geo/identify',
+      { method: 'POST', body: JSON.stringify(payload) },
+      () => clientFallbackEngine.identifyLocation(payload)
+    ),
 
   getComplaints: (params: Record<string, string | boolean | undefined> = {}) => {
     const qs = new URLSearchParams();
@@ -177,21 +235,30 @@ export const api = {
       }
     }
     const suffix = qs.toString() ? `?${qs.toString()}` : '';
-    return apiFetch<{ complaints: ComplaintSummary[] }>(`/api/complaints${suffix}`);
+    return apiFetchWithFallback<{ complaints: ComplaintSummary[] }>(
+      `/api/complaints${suffix}`,
+      {},
+      () => clientFallbackEngine.getComplaints(params)
+    );
   },
 
   getComplaintDetail: (id: string) =>
-    apiFetch<{ complaint: ComplaintDetail }>(`/api/complaints/${encodeURIComponent(id)}`),
+    apiFetchWithFallback<{ complaint: ComplaintDetail }>(
+      `/api/complaints/${encodeURIComponent(id)}`,
+      {},
+      () => clientFallbackEngine.getComplaintDetail(id)
+    ),
 
   transcribeVoice: (payload: {
     audioBase64: string;
     mimeType: string;
     languageHint?: 'te-IN' | 'en-IN' | 'auto';
   }) =>
-    apiFetch<{ transcript: string; detectedLanguage: string }>('/api/ai/transcribe', {
-      method: 'POST',
-      body: JSON.stringify(payload),
-    }),
+    apiFetchWithFallback<{ transcript: string; detectedLanguage: string }>(
+      '/api/ai/transcribe',
+      { method: 'POST', body: JSON.stringify(payload) },
+      () => clientFallbackEngine.transcribeVoice(payload)
+    ),
 
   analyzeComplaint: (payload: {
     text?: string;
@@ -202,22 +269,25 @@ export const api = {
     demoImagePath?: string;
     addressHint?: string;
   }) =>
-    apiFetch<{ assessment: AiAssessment }>('/api/ai/analyze', {
-      method: 'POST',
-      body: JSON.stringify(payload),
-    }),
+    apiFetchWithFallback<{ assessment: AiAssessment }>(
+      '/api/ai/analyze',
+      { method: 'POST', body: JSON.stringify(payload) },
+      () => clientFallbackEngine.analyzeComplaint(payload)
+    ),
 
   askAssistant: (payload: { question: string; complaintId?: string }) =>
-    apiFetch<{ answer: string; citedTrackingCodes: string[] }>('/api/ai/assistant', {
-      method: 'POST',
-      body: JSON.stringify(payload),
-    }),
+    apiFetchWithFallback<{ answer: string; citedTrackingCodes: string[] }>(
+      '/api/ai/assistant',
+      { method: 'POST', body: JSON.stringify(payload) },
+      () => clientFallbackEngine.askAssistant(payload)
+    ),
 
   createComplaint: (payload: Record<string, unknown>) =>
-    apiFetch<{ complaint: ComplaintDetail }>('/api/complaints', {
-      method: 'POST',
-      body: JSON.stringify(payload),
-    }),
+    apiFetchWithFallback<{ complaint: ComplaintDetail }>(
+      '/api/complaints',
+      { method: 'POST', body: JSON.stringify(payload) },
+      () => clientFallbackEngine.createComplaint(payload)
+    ),
 
   complaintAction: (
     id: string,
@@ -229,10 +299,11 @@ export const api = {
       delayReason?: string;
     }
   ) =>
-    apiFetch<{ complaint: ComplaintDetail }>(`/api/complaints/${encodeURIComponent(id)}/action`, {
-      method: 'POST',
-      body: JSON.stringify(payload),
-    }),
+    apiFetchWithFallback<{ complaint: ComplaintDetail }>(
+      `/api/complaints/${encodeURIComponent(id)}/action`,
+      { method: 'POST', body: JSON.stringify(payload) },
+      () => clientFallbackEngine.complaintAction(id, payload)
+    ),
 
   fieldProgress: (
     id: string,
@@ -247,15 +318,16 @@ export const api = {
       obstacleFlag?: boolean;
     }
   ) =>
-    apiFetch<{ complaint: ComplaintDetail }>(
+    apiFetchWithFallback<{ complaint: ComplaintDetail }>(
       `/api/complaints/${encodeURIComponent(id)}/field-progress`,
-      {
-        method: 'POST',
-        body: JSON.stringify(payload),
-      }
+      { method: 'POST', body: JSON.stringify(payload) },
+      () => clientFallbackEngine.fieldProgress(id, payload)
     ),
 
-  getAdminUsers: () => apiFetch<{ users: AdminUserRecord[] }>('/api/admin/users'),
+  getAdminUsers: () =>
+    apiFetchWithFallback<{ users: AdminUserRecord[] }>('/api/admin/users', {}, () =>
+      clientFallbackEngine.getAdminUsers()
+    ),
 
   updateAdminUser: (
     id: string,
@@ -265,16 +337,18 @@ export const api = {
       departmentId: string | null;
     }
   ) =>
-    apiFetch<{ ok: boolean }>(`/api/admin/users/${encodeURIComponent(id)}`, {
-      method: 'PUT',
-      body: JSON.stringify(payload),
-    }),
+    apiFetchWithFallback<{ ok: boolean }>(
+      `/api/admin/users/${encodeURIComponent(id)}`,
+      { method: 'PUT', body: JSON.stringify(payload) },
+      () => clientFallbackEngine.updateAdminUser(id, payload)
+    ),
 
   updateWardAuthority: (wardId: string, authorityId: string) =>
-    apiFetch<{ ok: boolean }>(`/api/admin/ward-authorities/${encodeURIComponent(wardId)}`, {
-      method: 'PUT',
-      body: JSON.stringify({ authorityId }),
-    }),
+    apiFetchWithFallback<{ ok: boolean }>(
+      `/api/admin/ward-authorities/${encodeURIComponent(wardId)}`,
+      { method: 'PUT', body: JSON.stringify({ authorityId }) },
+      () => clientFallbackEngine.updateWardAuthority(wardId, authorityId)
+    ),
 
   submitResolutionEvidence: (
     id: string,
@@ -286,12 +360,10 @@ export const api = {
       runAiComparison?: boolean;
     }
   ) =>
-    apiFetch<{ complaint: ComplaintDetail; aiWarning?: string | null }>(
+    apiFetchWithFallback<{ complaint: ComplaintDetail; aiWarning?: string | null }>(
       `/api/complaints/${encodeURIComponent(id)}/resolution-evidence`,
-      {
-        method: 'POST',
-        body: JSON.stringify(payload),
-      }
+      { method: 'POST', body: JSON.stringify(payload) },
+      () => clientFallbackEngine.submitResolutionEvidence(id, payload)
     ),
 
   verifyComplaint: (
@@ -302,38 +374,50 @@ export const api = {
       rating?: number;
     }
   ) =>
-    apiFetch<{ complaint: ComplaintDetail }>(`/api/complaints/${encodeURIComponent(id)}/verify`, {
-      method: 'POST',
-      body: JSON.stringify(payload),
-    }),
+    apiFetchWithFallback<{ complaint: ComplaintDetail }>(
+      `/api/complaints/${encodeURIComponent(id)}/verify`,
+      { method: 'POST', body: JSON.stringify(payload) },
+      () => clientFallbackEngine.verifyComplaint(id, payload)
+    ),
 
   runEscalationSweep: () =>
-    apiFetch<{ escalatedCount: number; escalations: EscalationRecord[] }>('/api/escalations/sweep', {
-      method: 'POST',
-    }),
+    apiFetchWithFallback<{ escalatedCount: number; escalations: EscalationRecord[] }>(
+      '/api/escalations/sweep',
+      { method: 'POST' },
+      () => clientFallbackEngine.runEscalationSweep()
+    ),
 
   updateRoutingRule: (
     id: string,
     payload: { departmentId: string; defaultPriority: Severity; autoAssignEnabled: boolean }
   ) =>
-    apiFetch<{ ok: boolean }>(`/api/admin/routing-rules/${encodeURIComponent(id)}`, {
-      method: 'PUT',
-      body: JSON.stringify(payload),
-    }),
+    apiFetchWithFallback<{ ok: boolean }>(
+      `/api/admin/routing-rules/${encodeURIComponent(id)}`,
+      { method: 'PUT', body: JSON.stringify(payload) },
+      () => clientFallbackEngine.updateRoutingRule(id, payload)
+    ),
 
   updateSlaConfig: (
     id: string,
     payload: { targetMinutes: number; escalateToRole: 'ward_rep' | 'municipal_admin' }
   ) =>
-    apiFetch<{ ok: boolean }>(`/api/admin/sla-configs/${encodeURIComponent(id)}`, {
-      method: 'PUT',
-      body: JSON.stringify(payload),
-    }),
+    apiFetchWithFallback<{ ok: boolean }>(
+      `/api/admin/sla-configs/${encodeURIComponent(id)}`,
+      { method: 'PUT', body: JSON.stringify(payload) },
+      () => clientFallbackEngine.updateSlaConfig(id, payload)
+    ),
 
-  getNotifications: () => apiFetch<{ notifications: NotificationItem[] }>('/api/notifications'),
+  getNotifications: () =>
+    apiFetchWithFallback<{ notifications: NotificationItem[] }>('/api/notifications', {}, () =>
+      clientFallbackEngine.getNotifications()
+    ),
 
   markAllNotificationsRead: () =>
-    apiFetch<{ ok: boolean }>('/api/notifications/read-all', { method: 'POST' }),
+    apiFetchWithFallback<{ ok: boolean }>(
+      '/api/notifications/read-all',
+      { method: 'POST' },
+      () => clientFallbackEngine.markAllNotificationsRead()
+    ),
 };
 
 export function formatRelativeTime(iso: string): string {
@@ -390,7 +474,8 @@ export function getStatusColor(status: ComplaintStatus): string {
   if (status === 'Escalated' || status === 'Reopened') return 'text-[#B91C1C]';
   if (status === 'Awaiting Citizen Verification' || status === 'Resolution Evidence Submitted')
     return 'text-[#0F7B55]';
-  if (status === 'In Progress' || status === 'Work Assigned') return 'text-[#1D4ED8]';
+  if (status === 'In Progress' || status === 'Work Assigned' || status === 'Work Started' || status === 'Work Completed')
+    return 'text-[#1D4ED8]';
   return 'text-[#5A635D]';
 }
 

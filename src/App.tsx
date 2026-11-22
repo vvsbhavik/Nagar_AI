@@ -90,6 +90,9 @@ export default function App() {
       try {
         const m = await api.getMeta();
         setMeta(m);
+      } catch {
+        const { clientFallbackEngine } = await import('./lib/clientFallbackEngine.ts');
+        setMeta(clientFallbackEngine.getMeta());
       } finally {
         setView('public_portal');
         setInitializing(false);
