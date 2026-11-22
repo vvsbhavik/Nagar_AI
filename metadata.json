@@ -1,0 +1,6 @@
+{
+  "name": "NagarAI",
+  "description": "AI-powered civic intelligence platform connecting citizens, locations, wards, authorities, field operations, and accountability — From Citizen Voice to Government Action.",
+  "requestFramePermissions": ["geolocation", "microphone", "camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

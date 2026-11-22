@@ -1,0 +1,79 @@
+@import "tailwindcss";
+@import "leaflet/dist/leaflet.css";
+
+@theme {
+  --font-display: "Plus Jakarta Sans", system-ui, sans-serif;
+  --font-sans: "DM Sans", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+
+  --color-forest-950: #0B261C;
+  --color-forest-900: #113829;
+  --color-forest-800: #164835;
+  --color-emerald-brand: #0F7B55;
+  --color-emerald-hover: #0C6545;
+  --color-canvas: #F7F7F4;
+  --color-surface: #FFFFFF;
+  --color-hairline: #E4E4DD;
+  --color-ink: #181C19;
+  --color-ink-muted: #5A635D;
+}
+
+@layer base {
+  html {
+    font-family: var(--font-sans);
+    color: var(--color-ink);
+    background-color: var(--color-canvas);
+  }
+
+  h1, h2, h3, h4, .font-display {
+    font-family: var(--font-display);
+  }
+
+  .tabular-nums {
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+/* Leaflet map refinements for crisp GovTech GIS look */
+.leaflet-container {
+  font-family: var(--font-sans);
+  background: #ECEEE9;
+  z-index: 1;
+}
+
+.leaflet-popup-content-wrapper {
+  border-radius: 10px;
+  border: 1px solid #E4E4DD;
+  box-shadow: 0 8px 24px -4px rgba(17, 56, 41, 0.12);
+  padding: 0;
+}
+
+.leaflet-popup-content {
+  margin: 12px 14px;
+  line-height: 1.45;
+}
+
+.leaflet-control-attribution {
+  font-size: 10px !important;
+  background: rgba(255, 255, 255, 0.85) !important;
+  color: #5A635D !important;
+}
+
+/* Subtle custom scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #D1D5CE;
+  border-radius: 9999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #A9B2A7;
+}
