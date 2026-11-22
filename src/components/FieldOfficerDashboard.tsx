@@ -8,6 +8,7 @@ import {
   getStatusColor,
   type MetaPayload,
 } from '../lib/api.ts';
+import { useI18n } from '../lib/i18n.tsx';
 import type { ComplaintSummary, UserProfile } from '../shared/types.ts';
 import { CivicMap } from './CivicMap.tsx';
 
@@ -20,15 +21,24 @@ interface FieldOfficerDashboardProps {
 const WORKFLOW_STEPS = [
   'Work Assigned',
   'Inspection Pending',
+  'Work Started',
   'In Progress',
-  'Awaiting Citizen Verification',
-  'Citizen Verified',
+  'Work Completed',
+  'Awaiting Verification',
 ];
 
 function getStepIndex(status: string): number {
-  if (status === 'Citizen Verified' || status === 'Resolved') return 4;
-  if (status === 'Awaiting Citizen Verification' || status === 'Resolution Evidence Submitted') return 3;
-  if (status === 'In Progress') return 2;
+  if (
+    status === 'Citizen Verified' ||
+    status === 'Resolved' ||
+    status === 'Awaiting Citizen Verification' ||
+    status === 'Resolution Evidence Submitted'
+  ) {
+    return 5;
+  }
+  if (status === 'Work Completed') return 4;
+  if (status === 'In Progress') return 3;
+  if (status === 'Work Started') return 2;
   if (status === 'Inspection Pending') return 1;
   return 0;
 }
@@ -38,42 +48,55 @@ export function FieldOfficerDashboard({
   meta,
   onSelectComplaint,
 }: FieldOfficerDashboardProps) {
+  const { t } = useI18n();
   const [tasks, setTasks] = useState<ComplaintSummary[]>([]);
-  const [scope, setScope] = useState<'assigned' | 'department'>('assigned');
+  const [scope, setScope] = useState<'assigned' | 'department' | 'completed'>('assigned');
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     setLoading(true);
     const params =
-      scope === 'assigned'
-        ? { scope: 'assigned' }
-        : { departmentId: user.departmentId || undefined };
+      scope === 'department'
+        ? { departmentId: user.departmentId || undefined }
+        : { scope: 'assigned' };
     api
       .getComplaints(params)
       .then((res) => setTasks(res.complaints))
       .finally(() => setLoading(false));
   }, [scope, user.id]);
 
-  const activeTasks = tasks.filter(
-    (t) => t.status !== 'Citizen Verified' && t.status !== 'Resolved'
+  const isCompletedStatus = (s: string) =>
+    s === 'Work Completed' ||
+    s === 'Awaiting Citizen Verification' ||
+    s === 'Resolution Evidence Submitted' ||
+    s === 'Citizen Verified' ||
+    s === 'Resolved';
+
+  const activeTasks = tasks.filter((tItem) => !isCompletedStatus(tItem.status));
+  const awaitingVerify = tasks.filter(
+    (tItem) =>
+      tItem.status === 'Awaiting Citizen Verification' || tItem.status === 'Work Completed'
   );
-  const awaitingVerify = tasks.filter((t) => t.status === 'Awaiting Citizen Verification');
   const completedTasks = tasks.filter(
-    (t) => t.status === 'Citizen Verified' || t.status === 'Resolved'
+    (tItem) => tItem.status === 'Citizen Verified' || tItem.status === 'Resolved'
   );
+
+  const displayedTasks =
+    scope === 'completed' ? tasks.filter((tItem) => isCompletedStatus(tItem.status)) : tasks;
 
   return (
     <div className="mx-auto max-w-5xl space-y-6">
       <div className="flex flex-wrap items-end justify-between gap-4 border-b border-[#E4E4DD] pb-5">
         <div>
           <p className="text-xs font-medium text-[#0F7B55]">
-            Mobile Field Execution · {user.departmentName || 'Municipal Field Unit'}
+            {t('roleFieldOfficer')} · {user.departmentName || 'Municipal Field Unit'}
           </p>
           <h1 className="mt-1 font-display text-2xl font-bold tracking-tight text-[#181C19]">
-            Field Officer Tasks
+            {t('navFieldTasks')}
           </h1>
           <p className="mt-1 text-sm text-[#5A635D]">
-            Inspect assigned locations, log obstacles, and submit before/after repair evidence.
+            Inspect assigned locations, log obstacles, update field statuses, and submit
+            before-and-after repair evidence.
           </p>
         </div>
 
@@ -81,7 +104,7 @@ export function FieldOfficerDashboard({
           <button
             type="button"
             onClick={() => setScope('assigned')}
-            className={`rounded-md px-3 py-1.5 transition-colors ${
+            className={`rounded-md px-3 py-1.5 transition-colors whitespace-nowrap ${
               scope === 'assigned' ? 'bg-white text-[#113829] shadow-xs' : 'text-[#5A635D]'
             }`}
           >
@@ -90,11 +113,20 @@ export function FieldOfficerDashboard({
           <button
             type="button"
             onClick={() => setScope('department')}
-            className={`rounded-md px-3 py-1.5 transition-colors ${
+            className={`rounded-md px-3 py-1.5 transition-colors whitespace-nowrap ${
               scope === 'department' ? 'bg-white text-[#113829] shadow-xs' : 'text-[#5A635D]'
             }`}
           >
             Department Queue
+          </button>
+          <button
+            type="button"
+            onClick={() => setScope('completed')}
+            className={`rounded-md px-3 py-1.5 transition-colors whitespace-nowrap ${
+              scope === 'completed' ? 'bg-white text-[#113829] shadow-xs' : 'text-[#5A635D]'
+            }`}
+          >
+            Completed Tasks
           </button>
         </div>
       </div>
@@ -108,13 +140,13 @@ export function FieldOfficerDashboard({
           </div>
         </div>
         <div className="rounded-xl border border-[#E4E4DD] bg-white p-4">
-          <div className="text-xs text-[#5A635D]">Awaiting Citizen Sign-Off</div>
+          <div className="text-xs text-[#5A635D]">Completed / Awaiting Sign-Off</div>
           <div className="mt-1 font-mono text-2xl font-bold text-[#0F7B55] tabular-nums">
             {awaitingVerify.length}
           </div>
         </div>
         <div className="rounded-xl border border-[#E4E4DD] bg-white p-4">
-          <div className="text-xs text-[#5A635D]">Verified Complete</div>
+          <div className="text-xs text-[#5A635D]">Citizen Verified</div>
           <div className="mt-1 font-mono text-2xl font-bold text-[#15803D] tabular-nums">
             {completedTasks.length}
           </div>
@@ -131,7 +163,7 @@ export function FieldOfficerDashboard({
         </div>
         <CivicMap
           wards={meta.wards}
-          complaints={tasks}
+          complaints={displayedTasks}
           onSelectComplaint={onSelectComplaint}
           heightClass="h-[260px]"
           showClusters={false}
@@ -144,12 +176,12 @@ export function FieldOfficerDashboard({
           <div className="rounded-xl border border-[#E4E4DD] bg-white p-8 text-center text-sm text-[#5A635D]">
             Loading field assignments...
           </div>
-        ) : tasks.length === 0 ? (
+        ) : displayedTasks.length === 0 ? (
           <div className="rounded-xl border border-[#E4E4DD] bg-white p-8 text-center text-sm text-[#5A635D]">
-            No field tasks assigned right now.
+            No field tasks in this view right now.
           </div>
         ) : (
-          tasks.map((task) => {
+          displayedTasks.map((task) => {
             const sev = getSeverityStyle(task.severity);
             const stepIdx = getStepIndex(task.status);
             const navUrl = `https://www.openstreetmap.org/directions?to=${task.latitude}%2C${task.longitude}`;
@@ -184,7 +216,7 @@ export function FieldOfficerDashboard({
                       {task.title}
                     </h3>
                     <div className="flex items-center gap-1.5 text-xs text-[#5A635D]">
-                      <MapPin className="h-3.5 w-3.5 text-[#0F7B55] shrink-0" />
+                      <MapPin className="h-3.5 w-3.5 shrink-0 text-[#0F7B55]" />
                       {task.addressLabel} · {task.wardName}
                     </div>
                   </div>
@@ -194,13 +226,13 @@ export function FieldOfficerDashboard({
                       src={task.primaryImageUrl}
                       alt={task.title}
                       referrerPolicy="no-referrer"
-                      className="h-16 w-24 rounded-lg border border-[#E4E4DD] object-cover shrink-0"
+                      className="h-16 w-24 shrink-0 rounded-lg border border-[#E4E4DD] object-cover"
                     />
                   )}
                 </div>
 
-                {/* Workflow Step Bar */}
-                <div className="mt-4 grid grid-cols-5 gap-1.5">
+                {/* 6-Stage Field Execution Progress Bar */}
+                <div className="mt-4 grid grid-cols-3 gap-1.5 sm:grid-cols-6">
                   {WORKFLOW_STEPS.map((label, i) => (
                     <div key={label} className="space-y-1">
                       <div

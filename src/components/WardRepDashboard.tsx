@@ -1,5 +1,14 @@
-import { AlertTriangle, Check, Search, ShieldAlert } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { AlertTriangle, Check, Info, MessageSquare, Search, ShieldAlert } from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
+import {
+  Area,
+  AreaChart,
+  CartesianGrid,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from 'recharts';
 import {
   api,
   formatDurationMinutes,
@@ -9,6 +18,7 @@ import {
   type IntelligenceSummaryPayload,
   type MetaPayload,
 } from '../lib/api.ts';
+import { useI18n } from '../lib/i18n.tsx';
 import {
   COMPLAINT_STATUSES,
   SEVERITIES,
@@ -30,6 +40,7 @@ export function WardRepDashboard({
   onSelectComplaint,
   onToast,
 }: WardRepDashboardProps) {
+  const { t } = useI18n();
   const [selectedWardId, setSelectedWardId] = useState<string>(user.wardId || 'ward-14');
   const [complaints, setComplaints] = useState<ComplaintSummary[]>([]);
   const [intel, setIntel] = useState<IntelligenceSummaryPayload | null>(null);
@@ -63,7 +74,7 @@ export function WardRepDashboard({
     try {
       await api.complaintAction(id, {
         action: 'acknowledge',
-        note: 'Acknowledged by Ward Representative Office for priority scheduling.',
+        note: 'Acknowledged by Ward Representative Office for department coordination.',
       });
       onToast('Complaint acknowledged and citizen notified.', 'success');
       await loadWardData();
@@ -85,7 +96,7 @@ export function WardRepDashboard({
       await api.complaintAction(c.id, {
         action: 'assign_officer',
         officerId: matchingOfficer.id,
-        note: `Dispatched ${matchingOfficer.fullName} from Ward Queue.`,
+        note: `Coordinated dispatch to ${matchingOfficer.fullName} via Ward Queue.`,
       });
       onToast(`Assigned ${c.trackingCode} to ${matchingOfficer.fullName}.`, 'success');
       await loadWardData();
@@ -100,12 +111,33 @@ export function WardRepDashboard({
   const wardHealth = intel?.wardHealth.find((w) => w.wardId === selectedWardId);
   const wardClusters = (intel?.duplicateGroups || []).filter((g) => g.wardId === selectedWardId);
   const wardInsights = (intel?.insights || []).filter((i) => i.wardId === selectedWardId);
+  const wardEscalations = (intel?.escalations || []).filter((e) => e.wardName === currentWard?.name);
+  const wardFeedback = (intel?.recentFeedback || []).filter(
+    (f) => f.wardId === selectedWardId
+  );
 
   const closedSet = new Set(['Resolved', 'Citizen Verified']);
   const pending = complaints.filter((c) => !closedSet.has(c.status));
   const critical = pending.filter((c) => c.severity === 'Critical');
   const overdue = pending.filter((c) => c.isOverdue);
-  const resolved = complaints.filter((c) => closedSet.has(c.status));
+  const resolvedThisMonth = complaints.filter(
+    (c) =>
+      closedSet.has(c.status) &&
+      Date.now() - new Date(c.updatedAt).getTime() <= 31 * 24 * 60 * 60 * 1000
+  );
+
+  // Ward Trend Series computed from ward complaints by month
+  const wardTrends = useMemo(() => {
+    const map = new Map<string, { month: string; reported: number; resolved: number }>();
+    for (const c of complaints) {
+      const m = c.createdAt.slice(0, 7);
+      const curr = map.get(m) || { month: m, reported: 0, resolved: 0 };
+      curr.reported += 1;
+      if (closedSet.has(c.status)) curr.resolved += 1;
+      map.set(m, curr);
+    }
+    return Array.from(map.values()).sort((a, b) => a.month.localeCompare(b.month));
+  }, [complaints]);
 
   const filtered = complaints.filter((c) => {
     if (search.trim()) {
@@ -128,14 +160,14 @@ export function WardRepDashboard({
       <div className="flex flex-wrap items-end justify-between gap-4 border-b border-[#E4E4DD] pb-5">
         <div>
           <p className="text-xs font-medium text-[#0F7B55]">
-            Ward Representative Operations · Demo Jurisdiction
+            {t('roleWardRep')} · Coordination &amp; Accountability Point (Demo Jurisdiction)
           </p>
           <h1 className="mt-1 font-display text-2xl font-bold tracking-tight text-[#181C19]">
-            {currentWard ? `${currentWard.code} — ${currentWard.name}` : 'Ward Dashboard'}
+            {currentWard ? `${currentWard.code} — ${currentWard.name}` : 'Ward Operations'}
           </h1>
           <p className="mt-1 text-sm text-[#5A635D]">
-            Acknowledge citizen complaints, dispatch department field units, and address recurring
-            ward infrastructure issues.
+            Acknowledge citizen complaints, coordinate department dispatches, review escalations, and
+            track recurring neighborhood issues.
           </p>
         </div>
 
@@ -155,16 +187,27 @@ export function WardRepDashboard({
         </div>
       </div>
 
-      {/* Ward KPIs */}
+      {/* Explicit Accountability Framing Note */}
+      <div className="flex items-start gap-2.5 rounded-xl border border-[#E4E4DD] bg-white px-4 py-3 text-xs text-[#344038]">
+        <Info className="mt-0.5 h-4 w-4 shrink-0 text-[#0F7B55]" />
+        <span>
+          <strong className="font-semibold text-[#181C19]">Coordination Role Notice:</strong> Ward
+          representatives act as configured accountability, acknowledgement, and escalation
+          coordination points — physical engineering repairs are executed by assigned municipal
+          department field units.
+        </span>
+      </div>
+
+      {/* Exact 6 Ward Metrics */}
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-6">
         {[
-          { label: 'Total Reports', val: complaints.length, tone: 'text-[#181C19]' },
-          { label: 'Pending Open', val: pending.length, tone: 'text-[#113829]' },
-          { label: 'Critical Open', val: critical.length, tone: 'text-[#B91C1C]' },
-          { label: 'SLA Overdue', val: overdue.length, tone: 'text-[#C2410C]' },
-          { label: 'Resolved', val: resolved.length, tone: 'text-[#15803D]' },
+          { label: t('kpiTotalComplaints'), val: complaints.length, tone: 'text-[#181C19]' },
+          { label: t('kpiPending'), val: pending.length, tone: 'text-[#113829]' },
+          { label: t('kpiCriticalIssues'), val: critical.length, tone: 'text-[#B91C1C]' },
+          { label: t('kpiOverdueIssues'), val: overdue.length, tone: 'text-[#C2410C]' },
+          { label: t('kpiResolvedMonth'), val: resolvedThisMonth.length, tone: 'text-[#15803D]' },
           {
-            label: 'Avg Resolution',
+            label: t('kpiAvgResolution'),
             val: `${wardHealth?.metrics.avgResolutionHours ?? 0}h`,
             tone: 'text-[#181C19]',
           },
@@ -183,7 +226,7 @@ export function WardRepDashboard({
         <section className="rounded-xl border border-[#E4E4DD] bg-white p-5 lg:col-span-7">
           <div className="mb-3 flex items-center justify-between">
             <h2 className="font-display text-base font-semibold text-[#181C19]">
-              Ward Geospatial Issue Map
+              Ward Issue Map
             </h2>
             <span className="font-mono text-xs text-[#5A635D]">
               {currentWard?.zone} · {complaints.length} records
@@ -205,7 +248,7 @@ export function WardRepDashboard({
               <div className="flex items-start justify-between gap-2">
                 <div>
                   <h2 className="font-display text-base font-semibold text-[#181C19]">
-                    Explainable Ward Health Index
+                    {t('wardHealthTitle')}
                   </h2>
                   <p className="text-xs text-[#5A635D]">
                     Resource support indicator · {wardHealth.supportTier}
@@ -247,7 +290,7 @@ export function WardRepDashboard({
 
           <section className="rounded-xl border border-[#E4E4DD] bg-white p-5">
             <h2 className="font-display text-sm font-semibold text-[#181C19]">
-              Recurring Infrastructure &amp; Cluster Alerts
+              Recurring Issue Insights
             </h2>
             {wardInsights.length === 0 ? (
               <p className="mt-2 text-xs text-[#5A635D]">
@@ -276,11 +319,122 @@ export function WardRepDashboard({
         </div>
       </div>
 
+      {/* Ward Trend Chart + Escalations + Citizen Feedback */}
+      <div className="grid gap-6 lg:grid-cols-12">
+        <section className="rounded-xl border border-[#E4E4DD] bg-white p-5 lg:col-span-5">
+          <h2 className="font-display text-base font-semibold text-[#181C19]">
+            Ward Monthly Trend
+          </h2>
+          <p className="text-xs text-[#5A635D]">Reported vs resolved issues in {currentWard?.name}</p>
+          <div className="mt-4 h-[210px]">
+            <ResponsiveContainer width="100%" height="100%">
+              <AreaChart data={wardTrends}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#EFEFEA" />
+                <XAxis dataKey="month" tick={{ fontSize: 11, fill: '#5A635D' }} />
+                <YAxis tick={{ fontSize: 11, fill: '#5A635D' }} allowDecimals={false} />
+                <Tooltip contentStyle={{ borderRadius: 8, borderColor: '#E4E4DD', fontSize: 12 }} />
+                <Area
+                  type="monotone"
+                  dataKey="reported"
+                  name="Reported"
+                  stroke="#113829"
+                  fill="#113829"
+                  fillOpacity={0.12}
+                />
+                <Area
+                  type="monotone"
+                  dataKey="resolved"
+                  name="Resolved"
+                  stroke="#0F7B55"
+                  fill="#0F7B55"
+                  fillOpacity={0.22}
+                />
+              </AreaChart>
+            </ResponsiveContainer>
+          </div>
+        </section>
+
+        <section className="rounded-xl border border-[#E4E4DD] bg-white p-5 lg:col-span-3">
+          <div className="flex items-center justify-between">
+            <h2 className="font-display text-sm font-semibold text-[#181C19]">
+              Ward Escalations
+            </h2>
+            <span className="font-mono text-xs font-bold text-[#B91C1C] tabular-nums">
+              {wardEscalations.length}
+            </span>
+          </div>
+          <div className="mt-3 space-y-2.5">
+            {wardEscalations.length === 0 ? (
+              <p className="text-xs text-[#5A635D]">No active escalations in this ward.</p>
+            ) : (
+              wardEscalations.slice(0, 4).map((esc) => (
+                <button
+                  key={esc.id}
+                  type="button"
+                  onClick={() => onSelectComplaint(esc.complaintId)}
+                  className="block w-full rounded-lg border border-[#FECACA] bg-[#FEF2F2]/70 p-3 text-left text-xs hover:bg-[#FEF2F2]"
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-mono font-bold text-[#113829]">{esc.trackingCode}</span>
+                    <span className="font-mono text-[11px] font-semibold text-[#B91C1C]">
+                      +{formatDurationMinutes(esc.overdueMinutes)}
+                    </span>
+                  </div>
+                  <div className="mt-1 line-clamp-1 font-medium text-[#181C19]">
+                    {esc.complaintTitle}
+                  </div>
+                </button>
+              ))
+            )}
+          </div>
+        </section>
+
+        <section className="rounded-xl border border-[#E4E4DD] bg-white p-5 lg:col-span-4">
+          <div className="flex items-center gap-1.5">
+            <MessageSquare className="h-4 w-4 text-[#0F7B55]" />
+            <h2 className="font-display text-sm font-semibold text-[#181C19]">
+              Citizen Verification Feedback
+            </h2>
+          </div>
+          <div className="mt-3 space-y-2.5">
+            {wardFeedback.length === 0 ? (
+              <p className="text-xs text-[#5A635D]">
+                No citizen verification ratings logged in this ward yet.
+              </p>
+            ) : (
+              wardFeedback.slice(0, 4).map((fb) => (
+                <button
+                  key={fb.id}
+                  type="button"
+                  onClick={() => onSelectComplaint(fb.complaintId)}
+                  className="block w-full rounded-lg border border-[#EFEFEA] bg-[#FAFAF8] p-3 text-left text-xs hover:border-[#0F7B55]"
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-mono font-semibold text-[#113829]">
+                      {fb.trackingCode}
+                    </span>
+                    <span className="font-mono font-semibold text-[#15803D] tabular-nums">
+                      {fb.rating ? `${fb.rating}/5` : fb.verdict}
+                    </span>
+                  </div>
+                  <div className="mt-0.5 line-clamp-1 font-medium text-[#181C19]">
+                    {fb.complaintTitle}
+                  </div>
+                  {fb.comment && (
+                    <p className="mt-1 line-clamp-2 text-[#5A635D]">&ldquo;{fb.comment}&rdquo;</p>
+                  )}
+                </button>
+              ))
+            )}
+          </div>
+        </section>
+      </div>
+
       {/* Ward Actionable Queue */}
       <section className="rounded-xl border border-[#E4E4DD] bg-white">
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#E4E4DD] p-4">
           <h2 className="font-display text-base font-semibold text-[#181C19]">
-            Ward Complaint Queue
+            Priority Ward Complaint Queue
           </h2>
           <div className="flex flex-wrap items-center gap-2">
             <div className="relative">
@@ -369,13 +523,19 @@ export function WardRepDashboard({
                           </div>
                         )}
                       </td>
-                      <td className={`px-4 py-3 text-xs font-semibold whitespace-nowrap ${getStatusColor(c.status)}`}>
+                      <td
+                        className={`px-4 py-3 text-xs font-semibold whitespace-nowrap ${getStatusColor(
+                          c.status
+                        )}`}
+                      >
                         {c.status}
                       </td>
                       <td className="px-4 py-3 text-right whitespace-nowrap">
                         <div className="inline-flex items-center gap-1.5">
                           {!isClosed &&
-                            (c.status === 'Authority Assigned' || c.status === 'Escalated' || c.status === 'Submitted') && (
+                            (c.status === 'Authority Assigned' ||
+                              c.status === 'Escalated' ||
+                              c.status === 'Submitted') && (
                               <button
                                 type="button"
                                 disabled={busyId === c.id}

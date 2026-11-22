@@ -15,6 +15,7 @@ interface CivicMapProps {
   heightClass?: string;
   showWardBoundaries?: boolean;
   showClusters?: boolean;
+  showHeatmap?: boolean;
   center?: [number, number];
   zoom?: number;
 }
@@ -40,6 +41,7 @@ export function CivicMap({
   heightClass = 'h-[420px]',
   showWardBoundaries = true,
   showClusters = true,
+  showHeatmap = false,
   center = [17.434, 78.426],
   zoom = 12,
 }: CivicMapProps) {
@@ -190,7 +192,37 @@ export function CivicMap({
       marker.bindPopup(popupEl);
       marker.addTo(group);
     }
-  }, [wards, complaints, clusters, highlightWardId, showWardBoundaries, showClusters]);
+
+    // 4. Optional City Issue Heatmap Overlay (density/severity-weighted radial heat zones)
+    if (showHeatmap) {
+      for (const c of complaints) {
+        const isClosed = c.status === 'Citizen Verified' || c.status === 'Resolved';
+        if (isClosed) continue;
+        const heatColor =
+          c.severity === 'Critical'
+            ? '#DC2626'
+            : c.severity === 'High'
+            ? '#EA580C'
+            : '#D97706';
+        const outer = L.circle([c.latitude, c.longitude], {
+          radius: c.severity === 'Critical' ? 680 : 480,
+          stroke: false,
+          fillColor: heatColor,
+          fillOpacity: c.severity === 'Critical' ? 0.16 : 0.1,
+          interactive: false,
+        });
+        const inner = L.circle([c.latitude, c.longitude], {
+          radius: c.severity === 'Critical' ? 280 : 210,
+          stroke: false,
+          fillColor: heatColor,
+          fillOpacity: c.severity === 'Critical' ? 0.24 : 0.15,
+          interactive: false,
+        });
+        outer.addTo(group);
+        inner.addTo(group);
+      }
+    }
+  }, [wards, complaints, clusters, highlightWardId, showWardBoundaries, showClusters, showHeatmap]);
 
   // Selected pin marker (for report picker or detail focus)
   useEffect(() => {

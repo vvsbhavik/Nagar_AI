@@ -33,7 +33,9 @@ export const COMPLAINT_STATUSES = [
   'Forwarded',
   'Inspection Pending',
   'Work Assigned',
+  'Work Started',
   'In Progress',
+  'Work Completed',
   'Resolution Evidence Submitted',
   'Awaiting Citizen Verification',
   'Resolved',
@@ -43,6 +45,29 @@ export const COMPLAINT_STATUSES = [
 ] as const;
 
 export type ComplaintStatus = (typeof COMPLAINT_STATUSES)[number];
+
+export interface AuthorityRecord {
+  id: string;
+  profileId: string | null;
+  name: string;
+  title: string;
+  departmentId: string | null;
+  contactLabelDemo: string;
+  isDemoOfficial: boolean;
+}
+
+export interface AdminUserRecord {
+  id: string;
+  email: string;
+  fullName: string;
+  role: Exclude<UserRole, 'public_observer'>;
+  wardId: string | null;
+  wardName: string | null;
+  departmentId: string | null;
+  departmentName: string | null;
+  isDemo: boolean;
+  createdAt: string;
+}
 
 export interface UserProfile {
   id: string;

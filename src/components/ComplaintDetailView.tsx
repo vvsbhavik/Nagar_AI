@@ -114,7 +114,9 @@ export function ComplaintDetailView({
     }
   };
 
-  const runFieldProgress = async (status: 'Inspection Pending' | 'In Progress') => {
+  const runFieldProgress = async (
+    status: 'Inspection Pending' | 'Work Started' | 'In Progress' | 'Work Completed'
+  ) => {
     if (!complaint) return;
     if (fieldNote.trim().length < 3) {
       onToast('Please enter a brief field inspection or progress note first.', 'error');
@@ -737,17 +739,33 @@ export function ComplaintDetailView({
                       type="button"
                       disabled={busyAction}
                       onClick={() => runFieldProgress('Inspection Pending')}
-                      className="rounded-lg border border-[#113829] bg-white px-3.5 py-2 text-xs font-semibold text-[#113829] hover:bg-[#F2F8F5] disabled:opacity-50"
+                      className="rounded-lg border border-[#D8DAD2] bg-white px-3 py-2 text-xs font-semibold text-[#181C19] hover:border-[#113829] disabled:opacity-50"
                     >
-                      Mark Inspection Logged
+                      Inspection Pending
+                    </button>
+                    <button
+                      type="button"
+                      disabled={busyAction}
+                      onClick={() => runFieldProgress('Work Started')}
+                      className="rounded-lg border border-[#113829] bg-white px-3 py-2 text-xs font-semibold text-[#113829] hover:bg-[#F2F8F5] disabled:opacity-50"
+                    >
+                      Work Started
                     </button>
                     <button
                       type="button"
                       disabled={busyAction}
                       onClick={() => runFieldProgress('In Progress')}
-                      className="rounded-lg bg-[#113829] px-3.5 py-2 text-xs font-semibold text-white hover:bg-[#164835] disabled:opacity-50"
+                      className="rounded-lg bg-[#113829] px-3 py-2 text-xs font-semibold text-white hover:bg-[#164835] disabled:opacity-50"
                     >
-                      Mark Work In Progress
+                      Work In Progress
+                    </button>
+                    <button
+                      type="button"
+                      disabled={busyAction}
+                      onClick={() => runFieldProgress('Work Completed')}
+                      className="rounded-lg bg-[#0F7B55] px-3 py-2 text-xs font-semibold text-white hover:bg-[#0C6545] disabled:opacity-50"
+                    >
+                      Work Completed
                     </button>
                   </div>
                 </div>

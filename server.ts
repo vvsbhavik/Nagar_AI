@@ -322,9 +322,29 @@ app.get('/api/meta', (_req, res) => {
     )
     .all() as Array<Record<string, unknown>>;
 
+  const authorities = db
+    .prepare(
+      `
+      SELECT a.*, p.full_name AS profile_name
+      FROM authorities a
+      LEFT JOIN profiles p ON p.id = a.profile_id
+      ORDER BY a.title ASC
+    `
+    )
+    .all() as Array<Record<string, unknown>>;
+
   res.json({
     wards,
     landmarks: DEMO_LANDMARKS,
+    authorities: authorities.map((a) => ({
+      id: String(a.id),
+      profileId: a.profile_id ? String(a.profile_id) : null,
+      name: String(a.profile_name || a.title),
+      title: String(a.title),
+      departmentId: a.department_id ? String(a.department_id) : null,
+      contactLabelDemo: String(a.contact_label_demo),
+      isDemoOfficial: Boolean(a.is_demo_official),
+    })),
     departments: departments.map((d) => ({
       id: String(d.id),
       code: String(d.code),
@@ -439,6 +459,20 @@ app.get('/api/public/overview', (_req, res) => {
     .prepare('SELECT id FROM duplicate_groups WHERE report_count >= 2 ORDER BY report_count DESC')
     .all() as Array<{ id: string }>;
 
+  const monthBuckets = new Map<string, { month: string; reported: number; resolved: number }>();
+  for (const c of complaints) {
+    const d = new Date(c.createdAt);
+    const key = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
+    const label = d.toLocaleDateString('en-US', { month: 'short', year: '2-digit' });
+    const entry = monthBuckets.get(key) || { month: label, reported: 0, resolved: 0 };
+    entry.reported += 1;
+    if (closedSet.has(c.status)) entry.resolved += 1;
+    monthBuckets.set(key, entry);
+  }
+  const trends = Array.from(monthBuckets.entries())
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([, v]) => v);
+
   res.json({
     stats: {
       totalReports: complaints.length,
@@ -452,6 +486,7 @@ app.get('/api/public/overview', (_req, res) => {
     wards,
     wardHealth,
     categoryBreakdown,
+    trends,
     insights,
     clusters: duplicateGroups.map((g) => getDuplicateGroupById(g.id)).filter(Boolean),
     verifiedShowcase: complaints.filter((c) => c.status === 'Citizen Verified' || c.status === 'Awaiting Citizen Verification').slice(0, 6),
@@ -1104,7 +1139,13 @@ app.post(
   requireRole('field_officer', 'municipal_admin'),
   (req: AuthRequest, res) => {
     const schema = z.object({
-      status: z.enum(['Inspection Pending', 'In Progress', 'Work Assigned']),
+      status: z.enum([
+        'Work Assigned',
+        'Inspection Pending',
+        'Work Started',
+        'In Progress',
+        'Work Completed',
+      ]),
       note: z.string().min(3).max(1000),
       obstacleFlag: z.boolean().optional(),
     });
@@ -1487,6 +1528,48 @@ app.get('/api/intelligence/summary', optionalAuth, (_req, res) => {
     .prepare('SELECT id FROM duplicate_groups WHERE report_count >= 2 ORDER BY report_count DESC')
     .all() as Array<{ id: string }>;
 
+  const feedbackRows = db
+    .prepare(
+      `
+      SELECT cf.id, cf.complaint_id, cf.verdict, cf.comment, cf.rating, cf.created_at,
+             c.tracking_code, c.title AS complaint_title, c.ward_id, w.name AS ward_name
+      FROM citizen_feedback cf
+      JOIN complaints c ON c.id = cf.complaint_id
+      LEFT JOIN wards w ON w.id = c.ward_id
+      ORDER BY cf.created_at DESC
+      LIMIT 30
+    `
+    )
+    .all() as Array<Record<string, unknown>>;
+
+  // Avg first-response hours (from complaint creation to first authority/officer history step)
+  const responseRows = db
+    .prepare(
+      `
+      SELECT c.created_at AS c_at, MIN(h.created_at) AS r_at
+      FROM complaints c
+      JOIN complaint_status_history h ON h.complaint_id = c.id
+      WHERE h.actor_role IN ('ward_rep', 'municipal_admin', 'field_officer')
+      GROUP BY c.id
+    `
+    )
+    .all() as Array<{ c_at: string; r_at: string }>;
+
+  const avgResponseHours =
+    responseRows.length > 0
+      ? Math.round(
+          (responseRows.reduce((sum, r) => {
+            const hrs = Math.max(
+              0.2,
+              (new Date(r.r_at).getTime() - new Date(r.c_at).getTime()) / (1000 * 60 * 60)
+            );
+            return sum + hrs;
+          }, 0) /
+            responseRows.length) *
+            10
+        ) / 10
+      : 0;
+
   res.json({
     kpis: {
       totalComplaints: complaints.length,
@@ -1495,6 +1578,7 @@ app.get('/api/intelligence/summary', optionalAuth, (_req, res) => {
       overdueComplaints: overdue.length,
       resolvedThisMonth,
       avgResolutionHours,
+      avgResponseHours,
       resolutionRatePct:
         complaints.length > 0 ? Math.round((resolved.length / complaints.length) * 100) : 0,
     },
@@ -1505,8 +1589,111 @@ app.get('/api/intelligence/summary', optionalAuth, (_req, res) => {
     insights: computeLiveHotspotsAndInsights(),
     duplicateGroups: dupIds.map((g) => getDuplicateGroupById(g.id)).filter(Boolean),
     escalations: getAllEscalationRecords(),
+    recentFeedback: feedbackRows.map((f) => ({
+      id: String(f.id),
+      complaintId: String(f.complaint_id),
+      trackingCode: String(f.tracking_code),
+      complaintTitle: String(f.complaint_title),
+      wardId: f.ward_id ? String(f.ward_id) : null,
+      wardName: f.ward_name ? String(f.ward_name) : null,
+      verdict: String(f.verdict),
+      comment: f.comment ? String(f.comment) : null,
+      rating: f.rating != null ? Number(f.rating) : null,
+      createdAt: String(f.created_at),
+    })),
   });
 });
+
+app.get(
+  '/api/admin/users',
+  requireAuth,
+  requireRole('municipal_admin'),
+  (_req, res) => {
+    const rows = db
+      .prepare(
+        `
+        SELECT p.id, p.email, p.full_name, p.role, p.ward_id, p.department_id, p.is_demo, p.created_at,
+               w.name AS ward_name, d.name AS department_name
+        FROM profiles p
+        LEFT JOIN wards w ON w.id = p.ward_id
+        LEFT JOIN departments d ON d.id = p.department_id
+        ORDER BY p.role ASC, p.full_name ASC
+      `
+      )
+      .all() as Array<Record<string, unknown>>;
+
+    res.json({
+      users: rows.map((u) => ({
+        id: String(u.id),
+        email: String(u.email),
+        fullName: String(u.full_name),
+        role: String(u.role),
+        wardId: u.ward_id ? String(u.ward_id) : null,
+        wardName: u.ward_name ? String(u.ward_name) : null,
+        departmentId: u.department_id ? String(u.department_id) : null,
+        departmentName: u.department_name ? String(u.department_name) : null,
+        isDemo: Boolean(u.is_demo),
+        createdAt: String(u.created_at),
+      })),
+    });
+  }
+);
+
+app.put(
+  '/api/admin/users/:id',
+  requireAuth,
+  requireRole('municipal_admin'),
+  (req: AuthRequest, res) => {
+    const schema = z.object({
+      role: z.enum(['citizen', 'ward_rep', 'municipal_admin', 'field_officer']),
+      wardId: z.string().nullable().optional(),
+      departmentId: z.string().nullable().optional(),
+    });
+    const parsed = schema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: 'Invalid user permissions payload.' });
+
+    const result = db
+      .prepare('UPDATE profiles SET role = ?, ward_id = ?, department_id = ? WHERE id = ?')
+      .run(
+        parsed.data.role,
+        parsed.data.wardId ?? null,
+        parsed.data.departmentId ?? null,
+        req.params.id
+      );
+    if (result.changes === 0) return res.status(404).json({ error: 'User not found.' });
+    res.json({ ok: true });
+  }
+);
+
+app.put(
+  '/api/admin/ward-authorities/:wardId',
+  requireAuth,
+  requireRole('municipal_admin'),
+  (req: AuthRequest, res) => {
+    const schema = z.object({
+      authorityId: z.string().min(2),
+    });
+    const parsed = schema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: 'Valid authorityId required.' });
+
+    const existing = db
+      .prepare('SELECT id FROM ward_authority_mapping WHERE ward_id = ? AND is_primary = 1')
+      .get(req.params.wardId) as { id?: string } | undefined;
+
+    if (existing?.id) {
+      db.prepare('UPDATE ward_authority_mapping SET authority_id = ? WHERE id = ?').run(
+        parsed.data.authorityId,
+        existing.id
+      );
+    } else {
+      db.prepare(
+        `INSERT INTO ward_authority_mapping (id, ward_id, authority_id, role_scope, is_primary) VALUES (?, ?, ?, 'Primary Ward Office', 1)`
+      ).run(`wam-${crypto.randomUUID().slice(0, 8)}`, req.params.wardId, parsed.data.authorityId);
+    }
+
+    res.json({ ok: true });
+  }
+);
 
 app.post(
   '/api/escalations/sweep',

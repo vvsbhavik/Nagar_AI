@@ -1,4 +1,5 @@
 import {
+  ArrowLeftRight,
   Bell,
   Bot,
   Building2,
@@ -11,13 +12,12 @@ import {
   Map as MapIcon,
   Menu,
   Plus,
-  Shield,
   UserCheck,
   X,
 } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { AdminDashboard } from './components/AdminDashboard.tsx';
-import { AuthModal } from './components/AuthModal.tsx';
+import { AuthPage } from './components/AuthPage.tsx';
 import { CitizenDashboard } from './components/CitizenDashboard.tsx';
 import { CivicAssistant } from './components/CivicAssistant.tsx';
 import { ComplaintDetailView } from './components/ComplaintDetailView.tsx';
@@ -26,16 +26,18 @@ import { PublicDashboard } from './components/PublicDashboard.tsx';
 import { ReportIssueView } from './components/ReportIssueView.tsx';
 import { WardRepDashboard } from './components/WardRepDashboard.tsx';
 import { api, formatRelativeTime, setAuthToken, type MetaPayload } from './lib/api.ts';
+import { LanguageToggle, useI18n } from './lib/i18n.tsx';
 import type { NotificationItem, UserProfile, UserRole } from './shared/types.ts';
 
 type AppView =
+  | 'public_portal'
+  | 'auth'
   | 'citizen_home'
   | 'citizen_complaints'
   | 'report_issue'
   | 'ward_dashboard'
   | 'admin_dashboard'
   | 'field_dashboard'
-  | 'public_portal'
   | 'assistant'
   | 'complaint_detail';
 
@@ -46,15 +48,15 @@ interface ToastState {
 }
 
 export default function App() {
+  const { t } = useI18n();
   const [user, setUser] = useState<UserProfile | null>(null);
   const [meta, setMeta] = useState<MetaPayload | null>(null);
-  const [view, setView] = useState<AppView>('citizen_home');
-  const [previousView, setPreviousView] = useState<AppView>('citizen_home');
+  const [view, setView] = useState<AppView>('public_portal');
+  const [previousView, setPreviousView] = useState<AppView>('public_portal');
   const [selectedComplaintId, setSelectedComplaintId] = useState<string | null>(null);
   const [initializing, setInitializing] = useState(true);
 
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
-  const [authModalOpen, setAuthModalOpen] = useState(false);
   const [assistantDrawerOpen, setAssistantDrawerOpen] = useState(false);
   const [notifOpen, setNotifOpen] = useState(false);
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
@@ -82,70 +84,68 @@ export default function App() {
     }
   };
 
-  // Bootstrap metadata and default Demo Citizen session so Primary Demo works seamlessly
+  // Start directly on the Public Website & Open Transparency Portal (no auto demo login)
   useEffect(() => {
     (async () => {
       try {
-        const [m, demoSession] = await Promise.all([
-          api.getMeta(),
-          api.demoLogin('citizen'),
-        ]);
+        const m = await api.getMeta();
         setMeta(m);
-        setAuthToken(demoSession.token);
-        setUser(demoSession.user);
-        setView('citizen_home');
-        const nRes = await api.getNotifications();
-        setNotifications(nRes.notifications);
-      } catch {
-        // Fallback cleanly to Public Transparency Portal
-        try {
-          const m = await api.getMeta();
-          setMeta(m);
-        } catch {
-          /* handled below */
-        }
-        setView('public_portal');
       } finally {
+        setView('public_portal');
         setInitializing(false);
       }
     })();
   }, []);
 
+  const getDefaultViewForRole = (role: UserRole | null): AppView => {
+    if (role === 'citizen') return 'citizen_home';
+    if (role === 'ward_rep') return 'ward_dashboard';
+    if (role === 'municipal_admin') return 'admin_dashboard';
+    if (role === 'field_officer') return 'field_dashboard';
+    return 'public_portal';
+  };
+
+  const getRoleLabel = (role: UserRole): string => {
+    if (role === 'citizen') return t('roleCitizen');
+    if (role === 'ward_rep') return t('roleWardRep');
+    if (role === 'field_officer') return t('roleFieldOfficer');
+    if (role === 'municipal_admin') return t('roleMunicipalAdmin');
+    return t('rolePublicObserver');
+  };
+
   const handleAuthenticated = async (token: string, profile: UserProfile) => {
     setAuthToken(token);
     setUser(profile);
-    if (profile.role === 'citizen') setView('citizen_home');
-    else if (profile.role === 'ward_rep') setView('ward_dashboard');
-    else if (profile.role === 'municipal_admin') setView('admin_dashboard');
-    else if (profile.role === 'field_officer') setView('field_dashboard');
     setSelectedComplaintId(null);
+    setView(getDefaultViewForRole(profile.role));
     await refreshNotifications();
-    showToast(`Switched workspace to ${profile.fullName}`, 'success');
+    showToast(`Signed in as ${profile.fullName} (${getRoleLabel(profile.role)})`, 'success');
   };
 
-  const handleQuickRoleSwitch = async (role: UserRole) => {
+  const handleSignOut = async () => {
     setMobileNavOpen(false);
-    if (role === 'public_observer') {
-      try {
-        if (user) await api.logout();
-      } catch {
-        /* ignore */
-      }
-      setAuthToken(null);
-      setUser(null);
-      setNotifications([]);
-      setSelectedComplaintId(null);
-      setView('public_portal');
-      showToast('Viewing Public Transparency Portal (no login required)', 'info');
-      return;
-    }
-
+    setNotifOpen(false);
     try {
-      const res = await api.demoLogin(role);
-      await handleAuthenticated(res.token, res.user);
-    } catch (err) {
-      showToast(err instanceof Error ? err.message : 'Role switch failed.', 'error');
+      if (user) await api.logout();
+    } catch {
+      /* ignore */
     }
+    setAuthToken(null);
+    setUser(null);
+    setNotifications([]);
+    setSelectedComplaintId(null);
+    setView('public_portal');
+    showToast('Signed out. Viewing Public Transparency Portal.', 'info');
+  };
+
+  const openAuthPage = () => {
+    setMobileNavOpen(false);
+    setAssistantDrawerOpen(false);
+    setNotifOpen(false);
+    if (view !== 'auth') {
+      setPreviousView(view);
+    }
+    setView('auth');
   };
 
   const openComplaint = (id: string) => {
@@ -156,6 +156,15 @@ export default function App() {
     setView('complaint_detail');
     setAssistantDrawerOpen(false);
     setNotifOpen(false);
+  };
+
+  const scrollToPublicSection = (sectionId: string) => {
+    setSelectedComplaintId(null);
+    setView('public_portal');
+    window.setTimeout(() => {
+      const el = document.getElementById(sectionId);
+      if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 60);
   };
 
   const unreadCount = notifications.filter((n) => !n.isRead).length;
@@ -169,63 +178,64 @@ export default function App() {
   }> = [
     {
       id: 'citizen_home',
-      label: 'Citizen Overview',
+      label: t('navCitizenOverview'),
       icon: LayoutDashboard,
       visible: activeRole === 'citizen',
     },
     {
       id: 'report_issue',
-      label: 'Report an Issue',
+      label: t('navReportIssue'),
       icon: Plus,
       visible: activeRole === 'citizen' || activeRole === 'municipal_admin',
     },
     {
       id: 'citizen_complaints',
-      label: 'My Complaints',
+      label: t('navMyComplaints'),
       icon: FileText,
       visible: activeRole === 'citizen',
     },
     {
       id: 'ward_dashboard',
-      label: 'Ward Operations',
+      label: t('navWardOps'),
       icon: UserCheck,
       visible: activeRole === 'ward_rep' || activeRole === 'municipal_admin',
     },
     {
       id: 'field_dashboard',
-      label: 'Field Tasks',
+      label: t('navFieldTasks'),
       icon: HardHat,
       visible: activeRole === 'field_officer' || activeRole === 'municipal_admin',
     },
     {
       id: 'admin_dashboard',
-      label: 'Command Center',
+      label: t('navCommandCenter'),
       icon: Building2,
       visible: activeRole === 'municipal_admin',
     },
     {
       id: 'public_portal',
-      label: 'Public Map & Portal',
+      label: t('navPublicPortal'),
       icon: Globe,
-      visible: true,
+      visible: Boolean(user),
     },
     {
       id: 'assistant',
-      label: 'AI Civic Assistant',
+      label: t('navAiAssistant'),
       icon: Bot,
-      visible: true,
+      visible: Boolean(user),
     },
   ];
 
   const breadcrumbLabel: Record<AppView, string> = {
-    citizen_home: 'Citizen / Overview',
-    citizen_complaints: 'Citizen / My Complaints',
-    report_issue: 'Citizen / Report Civic Issue',
-    ward_dashboard: 'Ward Representative / Operations',
-    admin_dashboard: 'Municipal Admin / Command Center',
-    field_dashboard: 'Field Operations / Assigned Tasks',
-    public_portal: 'Public Transparency / Open Civic Map',
-    assistant: 'Civic Intelligence / AI Assistant',
+    public_portal: `${t('navPublicPortal')} / ${t('navLiveMap')}`,
+    auth: t('signIn'),
+    citizen_home: `${t('roleCitizen')} / ${t('navCitizenOverview')}`,
+    citizen_complaints: `${t('roleCitizen')} / ${t('navMyComplaints')}`,
+    report_issue: `${t('roleCitizen')} / ${t('navReportIssue')}`,
+    ward_dashboard: `${t('roleWardRep')} / ${t('navWardOps')}`,
+    admin_dashboard: `${t('roleMunicipalAdmin')} / ${t('navCommandCenter')}`,
+    field_dashboard: `${t('roleFieldOfficer')} / ${t('navFieldTasks')}`,
+    assistant: `${t('civicIntelligence')} / ${t('navAiAssistant')}`,
     complaint_detail: 'Accountable Record / Detail View',
   };
 
@@ -238,131 +248,257 @@ export default function App() {
           </div>
           <div className="mt-3 font-display text-base font-bold text-[#181C19]">NagarAI</div>
           <div className="mt-1 text-xs text-[#5A635D]">
-            Initializing geospatial wards &amp; civic intelligence workspace...
+            Loading geospatial wards &amp; public transparency ledger...
           </div>
         </div>
       </div>
     );
   }
 
+  // Dedicated Full-Page Sign-In & Registration Experience
+  if (view === 'auth') {
+    return (
+      <>
+        <AuthPage
+          wards={meta.wards}
+          onBackToPublic={() => {
+            setView(user ? getDefaultViewForRole(user.role) : 'public_portal');
+          }}
+          onAuthenticated={handleAuthenticated}
+        />
+        {toast && (
+          <div className="fixed bottom-5 right-5 z-[1100] max-w-sm rounded-lg border border-[#E4E4DD] bg-[#113829] px-4 py-3 text-xs font-medium text-white shadow-lg">
+            <div className="flex items-center gap-2">
+              <MapIcon className="h-3.5 w-3.5 shrink-0 text-[#6EE7B7]" />
+              <span>{toast.message}</span>
+            </div>
+          </div>
+        )}
+      </>
+    );
+  }
+
+  // PUBLIC WEBSITE SHELL (No Sidebar — Clean 3-Zone Top Navigation Bar)
+  if (!user) {
+    return (
+      <div className="flex min-h-screen flex-col bg-[#F7F7F4] text-[#181C19]">
+        <header className="sticky top-0 z-[500] border-b border-[#E4E4DD] bg-white/95 backdrop-blur-xs">
+          <div className="mx-auto flex h-16 max-w-7xl items-center justify-between gap-4 px-4 sm:px-6 lg:px-8">
+            {/* Zone 1: Brand Wordmark */}
+            <button
+              type="button"
+              onClick={() => scrollToPublicSection('overview')}
+              className="flex items-center gap-2.5 text-left shrink-0"
+            >
+              <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-[#113829] font-display text-sm font-extrabold text-white">
+                N
+              </div>
+              <div>
+                <div className="font-display text-base font-bold leading-none tracking-tight text-[#113829]">
+                  {t('brandName')}
+                </div>
+                <div className="mt-0.5 text-[10px] font-medium text-[#5A635D]">
+                  {t('civicIntelligence')}
+                </div>
+              </div>
+            </button>
+
+            {/* Zone 2: Center Links */}
+            <nav className="hidden items-center gap-6 md:flex">
+              {[
+                { id: 'overview', label: t('navOverview') },
+                { id: 'live-map', label: t('navLiveMap') },
+                { id: 'ward-index', label: t('navWardIndex') },
+                { id: 'resolutions', label: t('navResolutions') },
+              ].map((link) => (
+                <button
+                  key={link.id}
+                  type="button"
+                  onClick={() => scrollToPublicSection(link.id)}
+                  className="text-sm font-medium text-[#344038] transition-colors hover:text-[#0F7B55] whitespace-nowrap"
+                >
+                  {link.label}
+                </button>
+              ))}
+            </nav>
+
+            {/* Zone 3: Language Globe Toggle + Civic AI + Sign In */}
+            <div className="flex items-center gap-2.5 shrink-0">
+              <LanguageToggle />
+              <button
+                type="button"
+                onClick={() => setAssistantDrawerOpen((v) => !v)}
+                className="hidden items-center gap-1.5 rounded-lg border border-[#D8DAD2] bg-white px-3 py-1.5 text-xs font-semibold text-[#181C19] transition-colors hover:border-[#0F7B55] hover:text-[#0F7B55] sm:inline-flex whitespace-nowrap"
+              >
+                <Bot className="h-3.5 w-3.5 text-[#0F7B55]" />
+                <span>Civic AI</span>
+              </button>
+              <button
+                type="button"
+                onClick={openAuthPage}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-[#113829] px-4 py-2 text-xs font-semibold text-white transition-colors hover:bg-[#164835] whitespace-nowrap"
+              >
+                <LogIn className="h-3.5 w-3.5" />
+                {t('signIn')}
+              </button>
+            </div>
+          </div>
+        </header>
+
+        <main className="mx-auto w-full max-w-7xl flex-1 px-4 py-7 sm:px-6 lg:px-8">
+          {view === 'complaint_detail' && selectedComplaintId ? (
+            <ComplaintDetailView
+              complaintId={selectedComplaintId}
+              user={null}
+              meta={meta}
+              onBack={() => setView('public_portal')}
+              onSelectComplaint={openComplaint}
+              onToast={showToast}
+            />
+          ) : view === 'assistant' ? (
+            <div className="mx-auto max-w-4xl">
+              <CivicAssistant
+                embedded
+                focusedComplaintId={selectedComplaintId || undefined}
+                onSelectTrackingCode={(code) => openComplaint(code)}
+              />
+            </div>
+          ) : (
+            <PublicDashboard
+              onSelectComplaint={openComplaint}
+              onOpenAuth={openAuthPage}
+              onOpenAssistant={() => setAssistantDrawerOpen(true)}
+              isSignedIn={false}
+            />
+          )}
+        </main>
+
+        <footer className="border-t border-[#E4E4DD] bg-white py-5 text-xs text-[#5A635D]">
+          <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-3 px-4 sm:px-6 lg:px-8">
+            <div className="font-medium text-[#181C19]">
+              NagarAI · {t('tagline')}
+            </div>
+            <div>{t('demoDatasetBadge')}</div>
+          </div>
+        </footer>
+
+        {assistantDrawerOpen && (
+          <div className="fixed inset-y-0 right-0 z-[800] w-full max-w-md shadow-2xl">
+            <CivicAssistant
+              focusedComplaintId={
+                view === 'complaint_detail' && selectedComplaintId ? selectedComplaintId : undefined
+              }
+              onSelectTrackingCode={(code) => openComplaint(code)}
+              onClose={() => setAssistantDrawerOpen(false)}
+            />
+          </div>
+        )}
+
+        {toast && (
+          <div className="fixed bottom-5 right-5 z-[1100] max-w-sm rounded-lg border border-[#E4E4DD] bg-[#113829] px-4 py-3 text-xs font-medium text-white shadow-lg">
+            <div className="flex items-center gap-2">
+              <MapIcon className="h-3.5 w-3.5 shrink-0 text-[#6EE7B7]" />
+              <span>{toast.message}</span>
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // AUTHENTICATED WORKSPACE SHELL (Crisp White Sidebar + Deep Forest Green Active States)
+  const visibleNavItems = navItems.filter((n) => n.visible);
+
   return (
     <div className="flex min-h-screen bg-[#F7F7F4] text-[#181C19]">
-      {/* Desktop Deep Forest Green Sidebar */}
-      <aside className="hidden w-[256px] shrink-0 flex-col bg-[#113829] text-white lg:flex">
-        <div className="border-b border-white/10 px-5 py-5">
+      {/* Sleek Light Desktop Sidebar */}
+      <aside className="hidden w-[248px] shrink-0 flex-col border-r border-[#E4E4DD] bg-white lg:flex">
+        <div className="flex h-14 items-center border-b border-[#E4E4DD] px-5">
           <button
             type="button"
-            onClick={() =>
-              setView(
-                activeRole === 'citizen'
-                  ? 'citizen_home'
-                  : activeRole === 'ward_rep'
-                  ? 'ward_dashboard'
-                  : activeRole === 'municipal_admin'
-                  ? 'admin_dashboard'
-                  : activeRole === 'field_officer'
-                  ? 'field_dashboard'
-                  : 'public_portal'
-              )
-            }
+            onClick={() => {
+              setSelectedComplaintId(null);
+              setView(getDefaultViewForRole(user.role));
+            }}
             className="flex items-center gap-2.5 text-left"
           >
-            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-[#0F7B55] font-display text-sm font-extrabold text-white">
+            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-[#113829] font-display text-sm font-extrabold text-white">
               N
             </div>
             <div>
-              <div className="font-display text-base font-bold leading-none tracking-tight text-white">
-                NagarAI
+              <div className="font-display text-base font-bold leading-none tracking-tight text-[#113829]">
+                {t('brandName')}
               </div>
-              <div className="mt-1 text-[11px] text-white/65">Civic Intelligence</div>
+              <div className="mt-0.5 text-[10px] font-medium text-[#5A635D]">
+                {getRoleLabel(user.role)}
+              </div>
             </div>
           </button>
         </div>
 
         <nav className="flex-1 space-y-1 px-3 py-4">
-          {navItems
-            .filter((n) => n.visible)
-            .map((item) => {
-              const Icon = item.icon;
-              const isActive = view === item.id;
-              return (
-                <button
-                  key={item.id}
-                  type="button"
-                  onClick={() => {
-                    setSelectedComplaintId(null);
-                    setView(item.id);
-                  }}
-                  className={`flex w-full items-center gap-2.5 rounded-lg px-3 py-2.5 text-left text-sm font-medium transition-colors whitespace-nowrap ${
-                    isActive
-                      ? 'bg-[#0F7B55] text-white'
-                      : 'text-white/80 hover:bg-white/8 hover:text-white'
-                  }`}
-                >
-                  <Icon className="h-4 w-4 shrink-0" />
-                  <span>{item.label}</span>
-                </button>
-              );
-            })}
-        </nav>
-
-        {/* Connected 5-Role Workspace Switcher */}
-        <div className="border-t border-white/10 p-4">
-          <div className="mb-2 flex items-center justify-between text-[11px] font-semibold text-white/60">
-            <span>Demo Role Switcher</span>
-            <Shield className="h-3 w-3" />
-          </div>
-          <div className="space-y-1">
-            {[
-              { role: 'citizen' as UserRole, label: 'Citizen' },
-              { role: 'ward_rep' as UserRole, label: 'Ward Representative' },
-              { role: 'field_officer' as UserRole, label: 'Field Officer' },
-              { role: 'municipal_admin' as UserRole, label: 'Municipal Admin' },
-              { role: 'public_observer' as UserRole, label: 'Public Observer' },
-            ].map((item) => (
+          <div className="px-3 pb-1.5 text-[11px] font-semibold text-[#7A847D]">Workspace</div>
+          {visibleNavItems.map((item) => {
+            const Icon = item.icon;
+            const isActive = view === item.id;
+            return (
               <button
-                key={item.role}
+                key={item.id}
                 type="button"
-                onClick={() => handleQuickRoleSwitch(item.role)}
-                className={`flex w-full items-center justify-between rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors ${
-                  activeRole === item.role
-                    ? 'bg-white/15 text-white font-semibold'
-                    : 'text-white/70 hover:bg-white/8 hover:text-white'
+                onClick={() => {
+                  setSelectedComplaintId(null);
+                  setView(item.id);
+                }}
+                className={`flex w-full items-center gap-2.5 rounded-lg px-3 py-2.5 text-left text-sm font-medium transition-colors whitespace-nowrap ${
+                  isActive
+                    ? 'bg-[#113829] text-white'
+                    : 'text-[#344038] hover:bg-[#F3F4EF] hover:text-[#113829]'
                 }`}
               >
-                <span>{item.label}</span>
-                {activeRole === item.role && (
-                  <span className="font-mono text-[10px] text-[#6EE7B7]">Active</span>
-                )}
+                <Icon
+                  className={`h-4 w-4 shrink-0 ${isActive ? 'text-[#6EE7B7]' : 'text-[#5A635D]'}`}
+                />
+                <span className="truncate">{item.label}</span>
               </button>
-            ))}
-          </div>
-          <div className="mt-3 border-t border-white/10 pt-3 text-[11px] text-white/60">
-            {user ? (
-              <div className="flex items-center justify-between gap-2">
-                <div className="min-w-0">
-                  <div className="truncate font-semibold text-white">{user.fullName}</div>
-                  <div className="truncate text-[10px] text-white/60">{user.email}</div>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => handleQuickRoleSwitch('public_observer')}
-                  className="rounded p-1 text-white/70 hover:bg-white/10 hover:text-white"
-                  title="Sign out to Public Observer"
-                >
-                  <LogOut className="h-3.5 w-3.5" />
-                </button>
+            );
+          })}
+        </nav>
+
+        {/* Clean Authenticated User Account Footer */}
+        <div className="border-t border-[#E4E4DD] p-3.5">
+          <div className="rounded-xl border border-[#EFEFEA] bg-[#FAFAF8] p-3">
+            <div className="flex items-center gap-2.5">
+              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-[#113829] font-mono text-xs font-bold text-white">
+                {user.avatarInitials}
               </div>
-            ) : (
+              <div className="min-w-0">
+                <div className="truncate text-xs font-bold text-[#181C19]">{user.fullName}</div>
+                <div className="truncate text-[11px] text-[#0F7B55]">{getRoleLabel(user.role)}</div>
+              </div>
+            </div>
+            {(user.wardName || user.departmentName) && (
+              <div className="mt-2 truncate border-t border-[#EFEFEA] pt-2 text-[11px] text-[#5A635D]">
+                {user.wardName || user.departmentName}
+              </div>
+            )}
+            <div className="mt-2.5 grid grid-cols-2 gap-1.5">
               <button
                 type="button"
-                onClick={() => setAuthModalOpen(true)}
-                className="flex w-full items-center justify-center gap-1.5 rounded-lg bg-white/10 py-2 text-xs font-semibold text-white hover:bg-white/15"
+                onClick={openAuthPage}
+                className="inline-flex items-center justify-center gap-1 rounded-lg border border-[#D8DAD2] bg-white px-2 py-1.5 text-[11px] font-semibold text-[#181C19] transition-colors hover:border-[#113829]"
               >
-                <LogIn className="h-3.5 w-3.5" />
-                Sign In / Register
+                <ArrowLeftRight className="h-3 w-3" />
+                {t('switchAccount')}
               </button>
-            )}
+              <button
+                type="button"
+                onClick={handleSignOut}
+                className="inline-flex items-center justify-center gap-1 rounded-lg border border-[#D8DAD2] bg-white px-2 py-1.5 text-[11px] font-semibold text-[#B91C1C] transition-colors hover:border-[#FECACA] hover:bg-[#FEF2F2]"
+              >
+                <LogOut className="h-3 w-3" />
+                {t('signOut')}
+              </button>
+            </div>
           </div>
         </div>
       </aside>
@@ -371,69 +507,68 @@ export default function App() {
       {mobileNavOpen && (
         <div className="fixed inset-0 z-[900] flex lg:hidden">
           <div
-            className="fixed inset-0 bg-black/40"
+            className="fixed inset-0 bg-black/35 backdrop-blur-[1px]"
             onClick={() => setMobileNavOpen(false)}
           />
-          <div className="relative flex w-72 flex-col bg-[#113829] p-4 text-white shadow-xl">
-            <div className="mb-4 flex items-center justify-between border-b border-white/10 pb-3">
-              <span className="font-display text-base font-bold">NagarAI</span>
+          <div className="relative flex w-72 flex-col bg-white p-4 text-[#181C19] shadow-xl">
+            <div className="mb-4 flex items-center justify-between border-b border-[#E4E4DD] pb-3">
+              <div className="flex items-center gap-2">
+                <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-[#113829] font-display text-xs font-extrabold text-white">
+                  N
+                </div>
+                <span className="font-display text-base font-bold text-[#113829]">
+                  {t('brandName')}
+                </span>
+              </div>
               <button
                 type="button"
                 onClick={() => setMobileNavOpen(false)}
-                className="rounded p-1 text-white/80 hover:bg-white/10"
+                className="rounded p-1 text-[#5A635D] hover:bg-[#F3F4EF]"
               >
                 <X className="h-5 w-5" />
               </button>
             </div>
-            <div className="space-y-1">
-              {navItems
-                .filter((n) => n.visible)
-                .map((item) => {
-                  const Icon = item.icon;
-                  return (
-                    <button
-                      key={item.id}
-                      type="button"
-                      onClick={() => {
-                        setSelectedComplaintId(null);
-                        setView(item.id);
-                        setMobileNavOpen(false);
-                      }}
-                      className={`flex w-full items-center gap-2.5 rounded-lg px-3 py-2.5 text-sm font-medium ${
-                        view === item.id ? 'bg-[#0F7B55] text-white' : 'text-white/80'
-                      }`}
-                    >
-                      <Icon className="h-4 w-4" />
-                      {item.label}
-                    </button>
-                  );
-                })}
-            </div>
-            <div className="mt-6 border-t border-white/10 pt-4">
-              <div className="mb-2 text-[11px] font-semibold text-white/60">
-                Switch Connected Role
-              </div>
-              <div className="space-y-1">
-                {(
-                  [
-                    ['citizen', 'Citizen'],
-                    ['ward_rep', 'Ward Representative'],
-                    ['field_officer', 'Field Officer'],
-                    ['municipal_admin', 'Municipal Admin'],
-                    ['public_observer', 'Public Observer'],
-                  ] as Array<[UserRole, string]>
-                ).map(([role, label]) => (
+            <div className="flex-1 space-y-1">
+              {visibleNavItems.map((item) => {
+                const Icon = item.icon;
+                const active = view === item.id;
+                return (
                   <button
-                    key={role}
+                    key={item.id}
                     type="button"
-                    onClick={() => handleQuickRoleSwitch(role)}
-                    className={`block w-full rounded px-2.5 py-1.5 text-left text-xs ${
-                      activeRole === role ? 'bg-white/15 font-semibold text-white' : 'text-white/75'
+                    onClick={() => {
+                      setSelectedComplaintId(null);
+                      setView(item.id);
+                      setMobileNavOpen(false);
+                    }}
+                    className={`flex w-full items-center gap-2.5 rounded-lg px-3 py-2.5 text-sm font-medium ${
+                      active ? 'bg-[#113829] text-white' : 'text-[#344038] hover:bg-[#F3F4EF]'
                     }`}
                   >
-                    {label}
+                    <Icon className={`h-4 w-4 ${active ? 'text-[#6EE7B7]' : 'text-[#5A635D]'}`} />
+                    {item.label}
                   </button>
-                ))}
+                );
+              })}
+            </div>
+            <div className="mt-4 space-y-2 border-t border-[#E4E4DD] pt-4">
+              <div className="text-xs font-bold text-[#181C19]">{user.fullName}</div>
+              <div className="text-[11px] text-[#5A635D]">{user.email}</div>
+              <div className="grid grid-cols-2 gap-2 pt-1">
+                <button
+                  type="button"
+                  onClick={openAuthPage}
+                  className="rounded-lg border border-[#D8DAD2] py-2 text-xs font-semibold text-[#181C19]"
+                >
+                  {t('switchAccount')}
+                </button>
+                <button
+                  type="button"
+                  onClick={handleSignOut}
+                  className="rounded-lg border border-[#FECACA] bg-[#FEF2F2] py-2 text-xs font-semibold text-[#B91C1C]"
+                >
+                  {t('signOut')}
+                </button>
               </div>
             </div>
           </div>
@@ -459,7 +594,9 @@ export default function App() {
             </div>
           </div>
 
-          <div className="flex items-center gap-2.5 shrink-0">
+          <div className="flex shrink-0 items-center gap-2.5">
+            <LanguageToggle compact />
+
             <button
               type="button"
               onClick={() => setAssistantDrawerOpen((v) => !v)}
@@ -469,89 +606,79 @@ export default function App() {
               <span className="hidden sm:inline">Civic AI</span>
             </button>
 
-            {user ? (
-              <div className="relative">
-                <button
-                  type="button"
-                  onClick={async () => {
-                    setNotifOpen((o) => !o);
-                    if (!notifOpen) await refreshNotifications();
-                  }}
-                  className="relative rounded-lg border border-[#D8DAD2] bg-white p-1.5 text-[#181C19] hover:border-[#113829]"
-                  aria-label="Notifications"
-                >
-                  <Bell className="h-4 w-4" />
-                  {unreadCount > 0 && (
-                    <span className="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-[#DC2626] px-1 font-mono text-[10px] font-bold text-white">
-                      {unreadCount}
-                    </span>
-                  )}
-                </button>
-
-                {notifOpen && (
-                  <div className="absolute right-0 mt-2 w-80 rounded-xl border border-[#E4E4DD] bg-white shadow-xl">
-                    <div className="flex items-center justify-between border-b border-[#EFEFEA] px-4 py-3">
-                      <span className="text-xs font-bold text-[#181C19]">Notifications</span>
-                      {unreadCount > 0 && (
-                        <button
-                          type="button"
-                          onClick={async () => {
-                            await api.markAllNotificationsRead();
-                            await refreshNotifications();
-                          }}
-                          className="text-[11px] font-semibold text-[#0F7B55] hover:underline"
-                        >
-                          Mark all read
-                        </button>
-                      )}
-                    </div>
-                    <div className="max-h-80 divide-y divide-[#EFEFEA] overflow-y-auto">
-                      {notifications.length === 0 ? (
-                        <div className="p-4 text-center text-xs text-[#5A635D]">
-                          No notifications yet.
-                        </div>
-                      ) : (
-                        notifications.map((n) => (
-                          <button
-                            key={n.id}
-                            type="button"
-                            onClick={() => {
-                              if (n.complaintId) openComplaint(n.complaintId);
-                              setNotifOpen(false);
-                            }}
-                            className={`block w-full px-4 py-3 text-left hover:bg-[#F7F7F4] ${
-                              !n.isRead ? 'bg-[#F2F8F5]/60' : ''
-                            }`}
-                          >
-                            <div className="flex items-center justify-between gap-2 text-xs font-semibold text-[#181C19]">
-                              <span className="truncate">{n.title}</span>
-                              <span className="font-mono text-[10px] font-normal text-[#5A635D] shrink-0">
-                                {formatRelativeTime(n.createdAt)}
-                              </span>
-                            </div>
-                            <p className="mt-0.5 line-clamp-2 text-xs text-[#5A635D]">{n.body}</p>
-                          </button>
-                        ))
-                      )}
-                    </div>
-                  </div>
+            <div className="relative">
+              <button
+                type="button"
+                onClick={async () => {
+                  setNotifOpen((o) => !o);
+                  if (!notifOpen) await refreshNotifications();
+                }}
+                className="relative rounded-lg border border-[#D8DAD2] bg-white p-1.5 text-[#181C19] hover:border-[#113829]"
+                aria-label="Notifications"
+              >
+                <Bell className="h-4 w-4" />
+                {unreadCount > 0 && (
+                  <span className="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-[#DC2626] px-1 font-mono text-[10px] font-bold text-white">
+                    {unreadCount}
+                  </span>
                 )}
-              </div>
-            ) : null}
+              </button>
 
-            <button
-              type="button"
-              onClick={() => setAuthModalOpen(true)}
-              className="rounded-lg bg-[#113829] px-3.5 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-[#164835] whitespace-nowrap"
-            >
-              {user ? `${user.avatarInitials} · Switch Account` : 'Sign In'}
-            </button>
+              {notifOpen && (
+                <div className="absolute right-0 mt-2 w-80 rounded-xl border border-[#E4E4DD] bg-white shadow-xl">
+                  <div className="flex items-center justify-between border-b border-[#EFEFEA] px-4 py-3">
+                    <span className="text-xs font-bold text-[#181C19]">Notifications</span>
+                    {unreadCount > 0 && (
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          await api.markAllNotificationsRead();
+                          await refreshNotifications();
+                        }}
+                        className="text-[11px] font-semibold text-[#0F7B55] hover:underline"
+                      >
+                        Mark all read
+                      </button>
+                    )}
+                  </div>
+                  <div className="max-h-80 divide-y divide-[#EFEFEA] overflow-y-auto">
+                    {notifications.length === 0 ? (
+                      <div className="p-4 text-center text-xs text-[#5A635D]">
+                        No notifications yet.
+                      </div>
+                    ) : (
+                      notifications.map((n) => (
+                        <button
+                          key={n.id}
+                          type="button"
+                          onClick={() => {
+                            if (n.complaintId) openComplaint(n.complaintId);
+                            setNotifOpen(false);
+                          }}
+                          className={`block w-full px-4 py-3 text-left hover:bg-[#F7F7F4] ${
+                            !n.isRead ? 'bg-[#F2F8F5]/60' : ''
+                          }`}
+                        >
+                          <div className="flex items-center justify-between gap-2 text-xs font-semibold text-[#181C19]">
+                            <span className="truncate">{n.title}</span>
+                            <span className="shrink-0 font-mono text-[10px] font-normal text-[#5A635D]">
+                              {formatRelativeTime(n.createdAt)}
+                            </span>
+                          </div>
+                          <p className="mt-0.5 line-clamp-2 text-xs text-[#5A635D]">{n.body}</p>
+                        </button>
+                      ))
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
         </header>
 
         {/* Active Viewport Content */}
         <main className="flex-1 px-4 py-6 lg:px-8">
-          {view === 'citizen_home' && user && (
+          {view === 'citizen_home' && (
             <CitizenDashboard
               mode="overview"
               user={user}
@@ -562,7 +689,7 @@ export default function App() {
             />
           )}
 
-          {view === 'citizen_complaints' && user && (
+          {view === 'citizen_complaints' && (
             <CitizenDashboard
               mode="complaints"
               user={user}
@@ -576,7 +703,9 @@ export default function App() {
           {view === 'report_issue' && (
             <ReportIssueView
               meta={meta}
-              onCancel={() => setView(user?.role === 'municipal_admin' ? 'admin_dashboard' : 'citizen_home')}
+              onCancel={() =>
+                setView(user.role === 'municipal_admin' ? 'admin_dashboard' : 'citizen_home')
+              }
               onSubmitted={(created) => {
                 refreshNotifications();
                 openComplaint(created.id);
@@ -585,7 +714,7 @@ export default function App() {
             />
           )}
 
-          {view === 'ward_dashboard' && user && (
+          {view === 'ward_dashboard' && (
             <WardRepDashboard
               user={user}
               meta={meta}
@@ -603,7 +732,7 @@ export default function App() {
             />
           )}
 
-          {view === 'field_dashboard' && user && (
+          {view === 'field_dashboard' && (
             <FieldOfficerDashboard
               user={user}
               meta={meta}
@@ -614,8 +743,9 @@ export default function App() {
           {view === 'public_portal' && (
             <PublicDashboard
               onSelectComplaint={openComplaint}
-              onOpenAuth={() => setAuthModalOpen(true)}
-              isSignedIn={Boolean(user)}
+              onOpenAuth={openAuthPage}
+              onOpenAssistant={() => setAssistantDrawerOpen(true)}
+              isSignedIn={true}
             />
           )}
 
@@ -647,9 +777,7 @@ export default function App() {
         <div className="fixed inset-y-0 right-0 z-[800] w-full max-w-md shadow-2xl">
           <CivicAssistant
             focusedComplaintId={
-              view === 'complaint_detail' && selectedComplaintId
-                ? selectedComplaintId
-                : undefined
+              view === 'complaint_detail' && selectedComplaintId ? selectedComplaintId : undefined
             }
             onSelectTrackingCode={(code) => openComplaint(code)}
             onClose={() => setAssistantDrawerOpen(false)}
@@ -657,20 +785,11 @@ export default function App() {
         </div>
       )}
 
-      {/* Auth & Persona Modal */}
-      {authModalOpen && (
-        <AuthModal
-          wards={meta.wards}
-          onClose={() => setAuthModalOpen(false)}
-          onAuthenticated={handleAuthenticated}
-        />
-      )}
-
       {/* Clean Toast Feedback */}
       {toast && (
         <div className="fixed bottom-5 right-5 z-[1100] max-w-sm rounded-lg border border-[#E4E4DD] bg-[#113829] px-4 py-3 text-xs font-medium text-white shadow-lg">
           <div className="flex items-center gap-2">
-            <MapIcon className="h-3.5 w-3.5 text-[#6EE7B7] shrink-0" />
+            <MapIcon className="h-3.5 w-3.5 shrink-0 text-[#6EE7B7]" />
             <span>{toast.message}</span>
           </div>
         </div>

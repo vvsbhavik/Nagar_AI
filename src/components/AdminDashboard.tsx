@@ -1,10 +1,13 @@
 import {
   AlertTriangle,
+  Flame,
   Layers,
+  MapPin,
   RefreshCw,
   Save,
   Settings,
   ShieldAlert,
+  Users,
 } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import {
@@ -28,10 +31,12 @@ import {
   type IntelligenceSummaryPayload,
   type MetaPayload,
 } from '../lib/api.ts';
+import { useI18n } from '../lib/i18n.tsx';
 import {
   COMPLAINT_CATEGORIES,
   COMPLAINT_STATUSES,
   SEVERITIES,
+  type AdminUserRecord,
   type ComplaintSummary,
   type RoutingRule,
   type Severity,
@@ -52,13 +57,15 @@ export function AdminDashboard({
   onSelectComplaint,
   onToast,
 }: AdminDashboardProps) {
-  const [activeTab, setActiveTab] = useState<'overview' | 'hotspots' | 'escalations' | 'config'>(
-    'overview'
-  );
+  const { t } = useI18n();
+  const [activeTab, setActiveTab] = useState<
+    'overview' | 'hotspots' | 'escalations' | 'config' | 'governance'
+  >('overview');
   const [intel, setIntel] = useState<IntelligenceSummaryPayload | null>(null);
   const [complaints, setComplaints] = useState<ComplaintSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [sweeping, setSweeping] = useState(false);
+  const [showHeatmap, setShowHeatmap] = useState(true);
 
   // Citywide multi-facet filters
   const [wardId, setWardId] = useState('all');
@@ -73,9 +80,21 @@ export function AdminDashboard({
   const [slaDraft, setSlaDraft] = useState<SlaConfig[]>(meta.slaConfigs);
   const [savingId, setSavingId] = useState<string | null>(null);
 
+  // Ward-Authority & RBAC Users
+  const [adminUsers, setAdminUsers] = useState<AdminUserRecord[]>([]);
+  const [usersLoading, setUsersLoading] = useState(false);
+  const [wardAuthorityDraft, setWardAuthorityDraft] = useState<Record<string, string>>({});
+
   useEffect(() => {
     setRoutingDraft(meta.routingRules);
     setSlaDraft(meta.slaConfigs);
+    const map: Record<string, string> = {};
+    for (const w of meta.wards) {
+      if (w.primaryAuthority?.id) {
+        map[w.id] = w.primaryAuthority.id;
+      }
+    }
+    setWardAuthorityDraft(map);
   }, [meta]);
 
   const loadAdminData = async () => {
@@ -99,9 +118,27 @@ export function AdminDashboard({
     }
   };
 
+  const loadGovernanceUsers = async () => {
+    setUsersLoading(true);
+    try {
+      const res = await api.getAdminUsers();
+      setAdminUsers(res.users);
+    } catch (err) {
+      onToast(err instanceof Error ? err.message : 'Unable to load users.', 'error');
+    } finally {
+      setUsersLoading(false);
+    }
+  };
+
   useEffect(() => {
     loadAdminData();
   }, [wardId, departmentId, category, severity, status, dateFrom]);
+
+  useEffect(() => {
+    if (activeTab === 'governance' && adminUsers.length === 0) {
+      loadGovernanceUsers();
+    }
+  }, [activeTab]);
 
   const handleEscalationSweep = async () => {
     setSweeping(true);
@@ -154,6 +191,38 @@ export function AdminDashboard({
     }
   };
 
+  const handleSaveWardAuthority = async (wId: string) => {
+    const authId = wardAuthorityDraft[wId];
+    if (!authId) return;
+    setSavingId(`wa-${wId}`);
+    try {
+      await api.updateWardAuthority(wId, authId);
+      await onRefreshMeta();
+      onToast('Updated ward-authority mapping.', 'success');
+    } catch (err) {
+      onToast(err instanceof Error ? err.message : 'Failed to update mapping.', 'error');
+    } finally {
+      setSavingId(null);
+    }
+  };
+
+  const handleSaveUser = async (u: AdminUserRecord) => {
+    setSavingId(`usr-${u.id}`);
+    try {
+      await api.updateAdminUser(u.id, {
+        role: u.role as 'citizen' | 'ward_rep' | 'municipal_admin' | 'field_officer',
+        wardId: u.wardId || null,
+        departmentId: u.departmentId || null,
+      });
+      await Promise.all([loadGovernanceUsers(), onRefreshMeta()]);
+      onToast(`Updated role & jurisdiction for ${u.fullName}.`, 'success');
+    } catch (err) {
+      onToast(err instanceof Error ? err.message : 'Failed to update user.', 'error');
+    } finally {
+      setSavingId(null);
+    }
+  };
+
   if (loading && !intel) {
     return (
       <div className="p-10 text-center text-sm text-[#5A635D]">
@@ -170,23 +239,24 @@ export function AdminDashboard({
       <div className="flex flex-wrap items-end justify-between gap-4 border-b border-[#E4E4DD] pb-5">
         <div>
           <p className="text-xs font-medium text-[#0F7B55]">
-            Citywide Municipal Command Center · Demo Administration
+            {t('roleMunicipalAdmin')} · Citywide Command Center (Demo Administration)
           </p>
           <h1 className="mt-1 font-display text-2xl font-bold tracking-tight text-[#181C19]">
-            Civic Intelligence &amp; Operations
+            {t('navCommandCenter')} &amp; Civic Intelligence
           </h1>
           <p className="mt-1 text-sm text-[#5A635D]">
-            Monitor ward capacity, department workloads, recurring infrastructure hotspots, SLA
-            escalations, and automated routing rules.
+            Monitor ward capacity, department workloads, city issue heatmaps, SLA escalations,
+            ward-authority mappings, and user permissions.
           </p>
         </div>
 
         <div className="flex flex-wrap gap-1 rounded-lg bg-[#EAECE5] p-1 text-xs font-semibold">
           {[
             { id: 'overview', label: 'Command Center' },
-            { id: 'hotspots', label: `Hotspots & Clusters (${intel?.insights.length || 0})` },
+            { id: 'hotspots', label: `Hotspots (${intel?.insights.length || 0})` },
             { id: 'escalations', label: `Escalations (${intel?.escalations.length || 0})` },
-            { id: 'config', label: 'Routing & SLA Rules' },
+            { id: 'config', label: 'Routing & SLA' },
+            { id: 'governance', label: 'Authorities & Users' },
           ].map((tab) => (
             <button
               key={tab.id}
@@ -204,17 +274,18 @@ export function AdminDashboard({
         </div>
       </div>
 
-      {/* Citywide KPIs */}
+      {/* Citywide KPIs (All Requested Command Metrics) */}
       {kpis && (
-        <div className="grid gap-3.5 sm:grid-cols-2 lg:grid-cols-7">
+        <div className="grid gap-3.5 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-8">
           {[
-            { label: 'Total Reports', val: kpis.totalComplaints, tone: 'text-[#181C19]' },
-            { label: 'Open Active', val: kpis.openComplaints, tone: 'text-[#113829]' },
-            { label: 'Critical Open', val: kpis.criticalComplaints, tone: 'text-[#B91C1C]' },
-            { label: 'SLA Overdue', val: kpis.overdueComplaints, tone: 'text-[#C2410C]' },
-            { label: 'Resolved (30d)', val: kpis.resolvedThisMonth, tone: 'text-[#15803D]' },
-            { label: 'Avg Resolution', val: `${kpis.avgResolutionHours}h`, tone: 'text-[#181C19]' },
-            { label: 'Resolution Rate', val: `${kpis.resolutionRatePct}%`, tone: 'text-[#0F7B55]' },
+            { label: t('kpiTotalComplaints'), val: kpis.totalComplaints, tone: 'text-[#181C19]' },
+            { label: t('kpiActiveComplaints'), val: kpis.openComplaints, tone: 'text-[#113829]' },
+            { label: t('kpiCriticalIssues'), val: kpis.criticalComplaints, tone: 'text-[#B91C1C]' },
+            { label: t('kpiOverdueIssues'), val: kpis.overdueComplaints, tone: 'text-[#C2410C]' },
+            { label: t('kpiResolutionRate'), val: `${kpis.resolutionRatePct}%`, tone: 'text-[#0F7B55]' },
+            { label: t('kpiAvgResponse'), val: `${kpis.avgResponseHours}h`, tone: 'text-[#113829]' },
+            { label: t('kpiAvgResolution'), val: `${kpis.avgResolutionHours}h`, tone: 'text-[#181C19]' },
+            { label: t('kpiResolvedMonth'), val: kpis.resolvedThisMonth, tone: 'text-[#15803D]' },
           ].map((k) => (
             <div key={k.label} className="rounded-xl border border-[#E4E4DD] bg-white p-4">
               <div className="text-[11px] font-medium text-[#5A635D]">{k.label}</div>
@@ -228,31 +299,45 @@ export function AdminDashboard({
 
       {activeTab === 'overview' && intel && (
         <div className="space-y-6">
-          {/* Multi-Facet Filter Bar + City Map */}
-          <section className="rounded-xl border border-[#E4E4DD] bg-white p-5 space-y-4">
+          {/* Multi-Facet Filter Bar + City Map & Heatmap Toggle */}
+          <section className="space-y-4 rounded-xl border border-[#E4E4DD] bg-white p-5">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div>
                 <h2 className="font-display text-base font-semibold text-[#181C19]">
-                  Interactive Citywide GIS Map
+                  Citywide GIS Map &amp; Issue Heatmap
                 </h2>
                 <p className="text-xs text-[#5A635D]">
                   Showing {complaints.length} matching complaint(s) across 6 Demo Ward Boundaries
                 </p>
               </div>
-              <button
-                type="button"
-                onClick={() => {
-                  setWardId('all');
-                  setDepartmentId('all');
-                  setCategory('all');
-                  setSeverity('all');
-                  setStatus('all');
-                  setDateFrom('');
-                }}
-                className="text-xs font-semibold text-[#0F7B55] hover:underline"
-              >
-                Reset Filters
-              </button>
+              <div className="flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={() => setShowHeatmap((v) => !v)}
+                  className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-semibold transition-colors ${
+                    showHeatmap
+                      ? 'border-[#EA580C]/40 bg-[#FFF7ED] text-[#C2410C]'
+                      : 'border-[#D8DAD2] bg-white text-[#5A635D] hover:text-[#181C19]'
+                  }`}
+                >
+                  <Flame className="h-3.5 w-3.5" />
+                  {showHeatmap ? 'Heatmap Layer: On' : 'Heatmap Layer: Off'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setWardId('all');
+                    setDepartmentId('all');
+                    setCategory('all');
+                    setSeverity('all');
+                    setStatus('all');
+                    setDateFrom('');
+                  }}
+                  className="text-xs font-semibold text-[#0F7B55] hover:underline"
+                >
+                  Reset Filters
+                </button>
+              </div>
             </div>
 
             <div className="grid gap-2.5 sm:grid-cols-3 lg:grid-cols-6">
@@ -331,11 +416,12 @@ export function AdminDashboard({
               clusters={intel.duplicateGroups}
               highlightWardId={wardId === 'all' ? null : wardId}
               onSelectComplaint={onSelectComplaint}
+              showHeatmap={showHeatmap}
               heightClass="h-[390px]"
             />
           </section>
 
-          {/* Charts Grid: Ward Distribution + Department Workload + Trends */}
+          {/* Charts Grid: Ward Distribution + Department Performance */}
           <div className="grid gap-6 lg:grid-cols-2">
             <section className="rounded-xl border border-[#E4E4DD] bg-white p-5">
               <h2 className="font-display text-base font-semibold text-[#181C19]">
@@ -360,7 +446,7 @@ export function AdminDashboard({
 
             <section className="rounded-xl border border-[#E4E4DD] bg-white p-5">
               <h2 className="font-display text-base font-semibold text-[#181C19]">
-                Department Workload &amp; SLA Load
+                Department Performance &amp; SLA Load
               </h2>
               <p className="text-xs text-[#5A635D]">Active vs overdue volume by municipal department</p>
               <div className="mt-4 h-[260px]">
@@ -480,7 +566,7 @@ export function AdminDashboard({
           <section className="rounded-xl border border-[#E4E4DD] bg-white p-6">
             <div className="mb-4">
               <h2 className="font-display text-base font-semibold text-[#181C19]">
-                Civic Hotspot &amp; Recurring Infrastructure Intelligence
+                AI-Grounded Civic Hotspot &amp; Recurring Infrastructure Insights
               </h2>
               <p className="text-xs text-[#5A635D]">
                 Every insight below is dynamically computed from actual database complaint clusters
@@ -492,7 +578,7 @@ export function AdminDashboard({
               {intel.insights.map((ins) => (
                 <div
                   key={ins.id}
-                  className="rounded-xl border border-[#E4E4DD] bg-[#FAFAF8] p-5 space-y-2.5"
+                  className="space-y-2.5 rounded-xl border border-[#E4E4DD] bg-[#FAFAF8] p-5"
                 >
                   <div className="flex items-center justify-between gap-2 text-xs">
                     <span className="font-semibold text-[#0F7B55]">
@@ -610,7 +696,7 @@ export function AdminDashboard({
       )}
 
       {activeTab === 'escalations' && intel && (
-        <section className="rounded-xl border border-[#E4E4DD] bg-white p-6 space-y-5">
+        <section className="space-y-5 rounded-xl border border-[#E4E4DD] bg-white p-6">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
               <h2 className="font-display text-base font-semibold text-[#181C19]">
@@ -764,12 +850,10 @@ export function AdminDashboard({
               {slaDraft.map((cfg, idx) => (
                 <div
                   key={cfg.id}
-                  className="rounded-lg border border-[#EFEFEA] bg-[#FAFAF8] p-4 space-y-2.5"
+                  className="space-y-2.5 rounded-lg border border-[#EFEFEA] bg-[#FAFAF8] p-4"
                 >
                   <div className="flex items-center justify-between">
-                    <span
-                      className={`text-sm font-bold ${getSeverityStyle(cfg.severity).text}`}
-                    >
+                    <span className={`text-sm font-bold ${getSeverityStyle(cfg.severity).text}`}>
                       {cfg.severity} Priority
                     </span>
                     <span className="font-mono text-xs text-[#5A635D] tabular-nums">
@@ -824,6 +908,184 @@ export function AdminDashboard({
                 </div>
               ))}
             </div>
+          </section>
+        </div>
+      )}
+
+      {activeTab === 'governance' && (
+        <div className="space-y-6">
+          {/* Ward–Authority Mappings */}
+          <section className="rounded-xl border border-[#E4E4DD] bg-white p-6">
+            <div className="mb-4 flex items-center gap-2">
+              <MapPin className="h-4 w-4 text-[#0F7B55]" />
+              <div>
+                <h2 className="font-display text-base font-semibold text-[#181C19]">
+                  Ward–Authority Accountability Mappings
+                </h2>
+                <p className="text-xs text-[#5A635D]">
+                  Assign the primary configured authority office responsible for each municipal ward
+                  boundary.
+                </p>
+              </div>
+            </div>
+
+            <div className="divide-y divide-[#EFEFEA]">
+              {meta.wards.map((ward) => (
+                <div
+                  key={ward.id}
+                  className="flex flex-wrap items-center justify-between gap-3 py-3"
+                >
+                  <div>
+                    <div className="text-sm font-semibold text-[#181C19]">
+                      {ward.code} · {ward.name}
+                    </div>
+                    <div className="text-xs text-[#5A635D]">{ward.zone}</div>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <select
+                      value={wardAuthorityDraft[ward.id] || ''}
+                      onChange={(e) =>
+                        setWardAuthorityDraft((prev) => ({ ...prev, [ward.id]: e.target.value }))
+                      }
+                      className="rounded-lg border border-[#D8DAD2] bg-white px-3 py-1.5 text-xs text-[#181C19]"
+                    >
+                      <option value="">Select Authority Office...</option>
+                      {meta.authorities.map((a) => (
+                        <option key={a.id} value={a.id}>
+                          {a.name} ({a.title})
+                        </option>
+                      ))}
+                    </select>
+                    <button
+                      type="button"
+                      disabled={savingId === `wa-${ward.id}` || !wardAuthorityDraft[ward.id]}
+                      onClick={() => handleSaveWardAuthority(ward.id)}
+                      className="inline-flex items-center gap-1 rounded-lg bg-[#113829] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[#164835] disabled:opacity-50"
+                    >
+                      <Save className="h-3 w-3" />
+                      Save Mapping
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </section>
+
+          {/* Users & Role-Based Permissions */}
+          <section className="rounded-xl border border-[#E4E4DD] bg-white p-6">
+            <div className="mb-4 flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2">
+                <Users className="h-4 w-4 text-[#0F7B55]" />
+                <div>
+                  <h2 className="font-display text-base font-semibold text-[#181C19]">
+                    Users &amp; Role-Based Access Permissions (RBAC)
+                  </h2>
+                  <p className="text-xs text-[#5A635D]">
+                    Manage platform roles, ward assignments, and municipal department scopes.
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={loadGovernanceUsers}
+                className="text-xs font-semibold text-[#0F7B55] hover:underline"
+              >
+                Refresh Directory
+              </button>
+            </div>
+
+            {usersLoading ? (
+              <div className="py-8 text-center text-xs text-[#5A635D]">
+                Loading user directory...
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs">
+                  <thead className="border-b border-[#E4E4DD] bg-[#FAFAF8] font-semibold text-[#5A635D]">
+                    <tr>
+                      <th className="px-3 py-2.5">User</th>
+                      <th className="px-3 py-2.5">Role</th>
+                      <th className="px-3 py-2.5">Assigned Ward</th>
+                      <th className="px-3 py-2.5">Department</th>
+                      <th className="px-3 py-2.5 text-right">Action</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-[#EFEFEA]">
+                    {adminUsers.map((u, idx) => (
+                      <tr key={u.id}>
+                        <td className="px-3 py-3">
+                          <div className="font-semibold text-[#181C19]">{u.fullName}</div>
+                          <div className="font-mono text-[11px] text-[#5A635D]">{u.email}</div>
+                        </td>
+                        <td className="px-3 py-3">
+                          <select
+                            value={u.role}
+                            onChange={(e) => {
+                              const next = [...adminUsers];
+                              next[idx] = { ...u, role: e.target.value as AdminUserRecord['role'] };
+                              setAdminUsers(next);
+                            }}
+                            className="rounded-lg border border-[#D8DAD2] bg-white px-2.5 py-1.5 text-xs"
+                          >
+                            <option value="citizen">Citizen</option>
+                            <option value="ward_rep">Ward Representative</option>
+                            <option value="field_officer">Field Officer</option>
+                            <option value="municipal_admin">Municipal Administrator</option>
+                          </select>
+                        </td>
+                        <td className="px-3 py-3">
+                          <select
+                            value={u.wardId || ''}
+                            onChange={(e) => {
+                              const next = [...adminUsers];
+                              next[idx] = { ...u, wardId: e.target.value || null };
+                              setAdminUsers(next);
+                            }}
+                            className="rounded-lg border border-[#D8DAD2] bg-white px-2.5 py-1.5 text-xs"
+                          >
+                            <option value="">Citywide / None</option>
+                            {meta.wards.map((w) => (
+                              <option key={w.id} value={w.id}>
+                                {w.code} · {w.name}
+                              </option>
+                            ))}
+                          </select>
+                        </td>
+                        <td className="px-3 py-3">
+                          <select
+                            value={u.departmentId || ''}
+                            onChange={(e) => {
+                              const next = [...adminUsers];
+                              next[idx] = { ...u, departmentId: e.target.value || null };
+                              setAdminUsers(next);
+                            }}
+                            className="rounded-lg border border-[#D8DAD2] bg-white px-2.5 py-1.5 text-xs"
+                          >
+                            <option value="">All / None</option>
+                            {meta.departments.map((d) => (
+                              <option key={d.id} value={d.id}>
+                                {d.name}
+                              </option>
+                            ))}
+                          </select>
+                        </td>
+                        <td className="px-3 py-3 text-right">
+                          <button
+                            type="button"
+                            disabled={savingId === `usr-${u.id}`}
+                            onClick={() => handleSaveUser(u)}
+                            className="inline-flex items-center gap-1 rounded-lg bg-[#113829] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[#164835] disabled:opacity-50"
+                          >
+                            <Save className="h-3 w-3" />
+                            Save
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </section>
         </div>
       )}

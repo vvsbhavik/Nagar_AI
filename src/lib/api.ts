@@ -1,5 +1,7 @@
 import type {
+  AdminUserRecord,
   AiAssessment,
+  AuthorityRecord,
   CivicInsight,
   ComplaintDetail,
   ComplaintStatus,
@@ -50,6 +52,7 @@ async function apiFetch<T>(url: string, options: RequestInit = {}): Promise<T> {
 export interface MetaPayload {
   wards: Ward[];
   landmarks: Array<{ label: string; wardId: string; lat: number; lng: number }>;
+  authorities: AuthorityRecord[];
   departments: Department[];
   routingRules: RoutingRule[];
   slaConfigs: SlaConfig[];
@@ -77,6 +80,7 @@ export interface PublicOverviewPayload {
   wards: Ward[];
   wardHealth: WardHealthScore[];
   categoryBreakdown: Array<{ category: string; count: number }>;
+  trends: Array<{ month: string; reported: number; resolved: number }>;
   insights: CivicInsight[];
   clusters: DuplicateGroup[];
   verifiedShowcase: ComplaintSummary[];
@@ -90,6 +94,7 @@ export interface IntelligenceSummaryPayload {
     overdueComplaints: number;
     resolvedThisMonth: number;
     avgResolutionHours: number;
+    avgResponseHours: number;
     resolutionRatePct: number;
   };
   departmentWorkload: Array<{
@@ -115,6 +120,18 @@ export interface IntelligenceSummaryPayload {
   insights: CivicInsight[];
   duplicateGroups: DuplicateGroup[];
   escalations: EscalationRecord[];
+  recentFeedback: Array<{
+    id: string;
+    complaintId: string;
+    trackingCode: string;
+    complaintTitle: string;
+    wardId: string | null;
+    wardName: string | null;
+    verdict: string;
+    comment: string | null;
+    rating: number | null;
+    createdAt: string;
+  }>;
 }
 
 export const api = {
@@ -220,7 +237,12 @@ export const api = {
   fieldProgress: (
     id: string,
     payload: {
-      status: 'Inspection Pending' | 'In Progress' | 'Work Assigned';
+      status:
+        | 'Work Assigned'
+        | 'Inspection Pending'
+        | 'Work Started'
+        | 'In Progress'
+        | 'Work Completed';
       note: string;
       obstacleFlag?: boolean;
     }
@@ -232,6 +254,27 @@ export const api = {
         body: JSON.stringify(payload),
       }
     ),
+
+  getAdminUsers: () => apiFetch<{ users: AdminUserRecord[] }>('/api/admin/users'),
+
+  updateAdminUser: (
+    id: string,
+    payload: {
+      role: 'citizen' | 'ward_rep' | 'municipal_admin' | 'field_officer';
+      wardId: string | null;
+      departmentId: string | null;
+    }
+  ) =>
+    apiFetch<{ ok: boolean }>(`/api/admin/users/${encodeURIComponent(id)}`, {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    }),
+
+  updateWardAuthority: (wardId: string, authorityId: string) =>
+    apiFetch<{ ok: boolean }>(`/api/admin/ward-authorities/${encodeURIComponent(wardId)}`, {
+      method: 'PUT',
+      body: JSON.stringify({ authorityId }),
+    }),
 
   submitResolutionEvidence: (
     id: string,
